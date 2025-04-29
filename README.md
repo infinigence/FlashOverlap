@@ -1,16 +1,16 @@
 <div align="center">
 
-# FlashOverlap 
+# ***FlashOverlap*** 
 
 <a href="https://arxiv.org/abs/2504.19519">
     <img src="https://img.shields.io/badge/FlashOverlap-Tech Report-red"></a>
 <a href="https://zhuanlan.zhihu.com/p/1897633068380054002?share_code=1nCLEM5AgyjRb&utm_psn=1900536763014963236&utm_source=wechat_timeline&utm_medium=social&s_r=0">
     <img src="https://img.shields.io/badge/FlashOverlap-ZHIHU-blue"></a>
 
-😊 ***A Lightweight Design for Computation-Communication Overlap***
+😊 **A Lightweight Design for Computation-Communication Overlap**
 </div>
 
-## Milestone
+## Roadmap
 - [x] demo for GEMM+AllReduce
 - [x] predictive search for wave grouping
 - [ ] multi-node example
@@ -31,6 +31,7 @@ First, pull the repo:
 
 ```shell
     $ git clone https://github.com/infinigence/FlashOverlap.git
+    $ cd FlashOverlap
     $ git submodule update --init --recursive
 ```
 Install PyTorch and other required packages through `pip` or `conda`:
@@ -58,7 +59,7 @@ Then the operators are registered as torch.class, and in Python code, the `.so` 
 ```
 
 ## Quick Start
-⚠️ ***Notice:*** the boundary handling is not implemented, thus the repo only supports regular GEMM shapes now (`M, N, K % 128 == 0`). 
+⚠️ ***Notice:*** the boundary handling is not implemented, thus the repo only supports regular GEMM shapes now (`M, N % 128 == 0`). 
 ### File Structure
 ```plaintext
 .
@@ -89,12 +90,12 @@ Then the operators are registered as torch.class, and in Python code, the `.so` 
 ├── test
 │   └── test.py
 ├── tool
-│   └── generate_instances.py
+│   └── generate_instances.py // Generate templated GEMMs
 ├── tune
-│   ├── bandwidth.py
-│   ├── gen_config.py
-│   ├── profile_config.py
-│   └── search.py
+│   ├── bandwidth.py          // Bandwidth test for predictive search
+│   ├── gen_config.py         // Generate GEMM configs based on CUTLASS profiler
+│   ├── profile_config.py     // Customized profiler
+│   └── search.py             // Exhausitive search and predictive search
 └── CMakeLists.txt
 ```
 

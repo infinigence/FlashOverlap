@@ -36,7 +36,7 @@ class OverlapRowParallelLayer(nn.Module):
         self.cseg_gpu = self.cseg_cpu.cuda(rank)
     
     def forward(self, x):
-        out = torch.zeros((x.size(0), self.weight.size(0)), dtype=torch.float16, device="cuda")
+        out = torch.empty((x.size(0), self.weight.size(0)), dtype=torch.float16, device="cuda")
         self.overlap_class.gemm_allreduce_overlap(
             x, self.weight, out, self.counter, self.reorder_array, 1, self.cseg_cpu, self.cseg_gpu, self.algo, False)
         return out

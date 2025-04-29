@@ -244,18 +244,18 @@ void OverlapImpl::GemmAllReduceOverlap(
     signal_func_table[Algo](
         M, N, K, rLDN, cseg_gpu_ptr, a_ptr, b_ptr, c_ptr, mm_ptr, ra_ptr, if_monitor, this->gemm_stream
     );
-    // for (int iter = 0; iter < SegSize; iter++){
-    //     int this_seg = cseg_cpu_ptr[iter];
-    //     int commSize = M * N / TileNum * this_seg;
-    //     // The signal is reset by the wait kernel
-    //     kernel_wait_flag<<<1, 1, 0, this->comm_stream>>> (this_seg, (mm_ptr + iter));
-    //     // Communicate the data
-    //     NCCL_CHECK(ncclAllReduce((void *)(c_ptr + acc_addr), (void *)(c_ptr + acc_addr), commSize, ncclFloat16, ncclSum, this->comm, this->comm_stream));
-    //     acc_addr += commSize;
-    // }
+    for (int iter = 0; iter < SegSize; iter++){
+        int this_seg = cseg_cpu_ptr[iter];
+        int commSize = M * N / TileNum * this_seg;
+        // The signal is reset by the wait kernel
+        kernel_wait_flag<<<1, 1, 0, this->comm_stream>>> (this_seg, (mm_ptr + iter));
+        // Communicate the data
+        NCCL_CHECK(ncclAllReduce((void *)(c_ptr + acc_addr), (void *)(c_ptr + acc_addr), commSize, ncclFloat16, ncclSum, this->comm, this->comm_stream));
+        acc_addr += commSize;
+    }
 
-    // cudaEventCreateWithFlags(&this->gemm_finished, cudaEventDisableTiming);
-    // cudaEventRecord(this->gemm_finished, this->comm_stream);
-    // cudaStreamWaitEvent(this->gemm_stream, this->gemm_finished, 0);
-    // cudaEventDestroy(this->gemm_finished);
+    cudaEventCreateWithFlags(&this->gemm_finished, cudaEventDisableTiming);
+    cudaEventRecord(this->gemm_finished, this->comm_stream);
+    cudaStreamWaitEvent(this->gemm_stream, this->gemm_finished, 0);
+    cudaEventDestroy(this->gemm_finished);
 }

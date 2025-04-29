@@ -61,7 +61,7 @@ def read_algo_dict(file_path: str, key_tuple: tuple):
         # 2. 分配一个新的序号
         new_index = len(data_dict)
         data_dict[key_tuple] = new_index
-        print(data_dict)
+        # print(data_dict)
         # 3. 并重新保存dict
         torch.save(data_dict, file_path)
         return new_index
