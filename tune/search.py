@@ -101,6 +101,7 @@ def compute_hint_process(rank, world_size, nccl_id,
 
         if w < WaveNum - 1:
             if index[0].shape[0] < wSize:
+                print(index[0].shape[0], wSize)
                 is_consistency = False
                 break
 
@@ -171,9 +172,7 @@ def predict_lat(M: int, N: int, gemm_dur: float,
         acc_comm_dur = interpolate_latency(comm_array, M*N // tile_num * gp[0], comm_op) + gemm_dur
         return acc_comm_dur
 
-    old_wave_num = (tile_num + sm_count - 1) // sm_count
-    new_wave_num = (tile_num + sm_count - 3) // (sm_count - 2)
-    gemm_dur = gemm_dur / old_wave_num * new_wave_num
+    wave_num = (tile_num + sm_count - 1) // sm_count
 
     for i in range(iter_num):
         if i == 0:
@@ -181,7 +180,7 @@ def predict_lat(M: int, N: int, gemm_dur: float,
         else:
             comm_dur = interpolate_latency(comm_array, M*N // tile_num * gp[i - 1], comm_op)
         acc_comm_dur = max(acc_comp_dur, acc_comm_dur) + comm_dur 
-        acc_comp_dur += gemm_dur / new_wave_num * ((gp[i] + sm_count - 3) // (sm_count - 2))
+        acc_comp_dur += gemm_dur / wave_num * ((gp[i] + sm_count - 1) // (sm_count))
     acc_comm_dur = max(acc_comp_dur, acc_comm_dur) + interpolate_latency(comm_array, M*N // tile_num * gp[-1], comm_op)
 
     return acc_comm_dur
@@ -318,10 +317,10 @@ def optimize_exhaustive(M: int, N: int, K: int, comm_op: str):
         Algo = Algo_list[t]
 
         tile_num = div_up(M, BM) * div_up(N, BN)
-        wave_num = div_up(tile_num, (sm_count - 2))
+        wave_num = div_up(tile_num, (sm_count))
 
         #compute hint
-        result = compute_hint(M, N, K, BM, BN, Algo, (sm_count - 2))
+        result = compute_hint(M, N, K, BM, BN, Algo, (sm_count))
 
         if result[0] == True:
             hint = result[1]
@@ -340,10 +339,10 @@ def optimize_exhaustive(M: int, N: int, K: int, comm_op: str):
         acc = 0
         for j in range(iter_num):
             if j < iter_num - 1:
-                gp[j] = gp[j] * (sm_count - 2)
+                gp[j] = gp[j] * (sm_count)
                 acc += gp[j]
             else:
-                gp[j] = min(gp[j] * (sm_count - 2), tile_num - acc)
+                gp[j] = min(gp[j] * (sm_count), tile_num - acc)
         dur = perf_running(M, N, K, BM, BN, Algo, gp, hint, comm_op)
         print(gp, "%.4f" % (dur))
 
@@ -366,17 +365,19 @@ def fast_search(M: int, N: int, K: int, comm_array: torch.Tensor, comm_op: str):
     sm_count = props.multi_processor_count
 
     hint = None
-    for t in range(5):
+    for t in range(10):
         BM = BM_list[t]
         BN = BN_list[t]
         gemm_dur = gemm_dur_list[t]
         Algo = Algo_list[t]
 
         tile_num = div_up(M, BM) * div_up(N, BN)
-        wave_num = div_up(tile_num, (sm_count - 2))
+        wave_num = div_up(tile_num, (sm_count))
+
+        min_group_size = div_up(wave_num, 10)
 
         #compute hint
-        result = compute_hint(M, N, K, BM, BN, Algo, (sm_count - 2))
+        result = compute_hint(M, N, K, BM, BN, Algo, min_group_size * (sm_count))
 
         if result[0] == True:
             hint = result[1]
@@ -385,7 +386,6 @@ def fast_search(M: int, N: int, K: int, comm_array: torch.Tensor, comm_op: str):
     assert hint != None, "Tuning fails! Try to increase min_group_size manully."
     print("Start predictive searching.")
     
-    min_group_size = div_up(wave_num, 10)
     min_dur = 1e5
     normalized_wave_num = div_up(wave_num, min_group_size)
     group_size_list = integer_partitions(normalized_wave_num)
@@ -400,10 +400,10 @@ def fast_search(M: int, N: int, K: int, comm_array: torch.Tensor, comm_op: str):
             continue
         for j in range(iter_num):
             if j < iter_num - 1:
-                gp[j] = gp[j] * (sm_count - 2) * min_group_size
+                gp[j] = gp[j] * (sm_count) * min_group_size
                 acc += gp[j]
             else:
-                gp[j] = min(gp[j] * (sm_count - 2) * min_group_size, tile_num - acc)
+                gp[j] = min(gp[j] * (sm_count) * min_group_size, tile_num - acc)
         est_dur = predict_lat(M, N, gemm_dur, comm_array, gp, tile_num, comm_op)
         
         if est_dur < min_dur:

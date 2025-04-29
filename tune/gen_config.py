@@ -10,7 +10,7 @@ import json
 import os
 from pathlib import Path
 
-torch.ops.load_library("../../build/lib/libst_pybinding.so")
+torch.ops.load_library("../build/lib/libst_pybinding.so")
 
 def get_optimal(data, idx: int):
     data["Runtime"] = data["Runtime"].astype(float)
@@ -70,7 +70,7 @@ def save_json(M: int, N: int, K: int, bm_list, bn_list, idx_list, dur_list):
     device = torch.cuda.current_device()
     props = torch.cuda.get_device_properties(device)
     gpu_name = props.name[7:11].lower()
-    file_path = f'../../configs/m{M}n{N}k{K}_{gpu_name}.json'
+    file_path = f'../configs/m{M}n{N}k{K}_{gpu_name}.json'
     if Path(file_path).exists():
         # 如果文件存在，加载 JSON 数据
         with open(file_path, 'r', encoding='utf-8') as f:
@@ -114,7 +114,7 @@ def main():
     dur_list = []
     bm_list = []
     bn_list = []
-    for idx in range(5):
+    for idx in range(10):
         result = get_optimal(data, idx)
 
         assert result[-2] == 1, "SplitK is not supported with the implementation based on CUTLASS."
@@ -122,7 +122,7 @@ def main():
 
         # check the GEMM performance under our wrapper
         # find the algo number in the dict, if does not exit, then add a new term
-        algo_idx = read_algo_dict("../../configs/AlgoDict.pt", result[:-1])
+        algo_idx = read_algo_dict("../configs/AlgoDict.pt", result[:-1])
         # benchmark the wrapped GEMM performance
         t = perf_wrapped_gemm(args.m, args.n, args.k, algo_idx)
         idx_list.append(algo_idx)

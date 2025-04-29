@@ -31,5 +31,5 @@ class ReorderRMSNorm(torch.nn.Module):
     def forward(self, x):
         output = torch.empty((x.size(0), x.size(1)), dtype=torch.float16, device="cuda")
         torch.ops.flashoverlap_op.reorder_rmsnorm(x, output, self.weight, 
-            self.bm, self.bn, 8, self.reorder_array)
+            self.bm, self.bn, 1, self.reorder_array)
         return output

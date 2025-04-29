@@ -90,13 +90,13 @@ def main():
         t = perf_wrapped_gemm(args.m, args.n, args.k, index)
         data_list.append((t, params_tuple, index))
 
-    top_5_fastest = nsmallest(5, data_list, key=lambda x: x[0])
+    top_10_fastest = nsmallest(10, data_list, key=lambda x: x[0])
 
     idx_list = []
     dur_list = []
     bm_list = []
     bn_list = []
-    for cand in top_5_fastest:
+    for cand in top_10_fastest:
         idx_list.append(cand[2])
         dur_list.append(cand[0])
         bm_list.append(cand[1][0])
