@@ -19,22 +19,22 @@ def perf_comm_process(rank, world_size, nccl_id, M, N, comm_op, result_dict):
     C = torch.empty((M, N), dtype=torch.float16, device="cuda").normal_(mean=0., std=0.5)
 
     if comm_op == "all_reduce":
-        for _ in range(100):
+        for _ in range(20):
             comm_class.nccl_allreduce(C)
-        start_event = [torch.cuda.Event(enable_timing=True) for i in range(1000)]
-        end_event = [torch.cuda.Event(enable_timing=True) for i in range(1000)]
-        for i in range(1000):
+        start_event = [torch.cuda.Event(enable_timing=True) for i in range(200)]
+        end_event = [torch.cuda.Event(enable_timing=True) for i in range(200)]
+        for i in range(200):
             start_event[i].record()
             comm_class.nccl_allreduce(C)
             end_event[i].record()
         torch.cuda.synchronize()
         dur = torch.tensor([s.elapsed_time(e) for s, e in zip(start_event, end_event)], dtype=torch.float)
     elif comm_op == "reduce_scatter":
-        for _ in range(100):
+        for _ in range(20):
             comm_class.nccl_reducescatter(C)
-        start_event = [torch.cuda.Event(enable_timing=True) for i in range(1000)]
-        end_event = [torch.cuda.Event(enable_timing=True) for i in range(1000)]
-        for i in range(1000):
+        start_event = [torch.cuda.Event(enable_timing=True) for i in range(200)]
+        end_event = [torch.cuda.Event(enable_timing=True) for i in range(200)]
+        for i in range(200):
             start_event[i].record()
             comm_class.nccl_reducescatter(C)
             end_event[i].record()
