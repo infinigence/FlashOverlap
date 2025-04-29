@@ -22,9 +22,9 @@
 ### Dependency
 The main dependency is [NCCL](https://developer.nvidia.com/nccl/nccl-download), which *FlashOverlap* uses for communication. It is convenient to download from the official website. The code has been tested with `v2.18.3` and `v2.19.3`. 
 
-Another dependency is [CUTLASS](https://github.com/NVIDIA/cutlass.git), which is included as submodule. Note than the code has been tested with `v3.6.0` and `v3.9.0`, but fails with `v3.4.0`. We assume `CUTLASS>=v3.6.0` works fine.  
+Another dependency is [CUTLASS](https://github.com/NVIDIA/cutlass.git), which is included as submodule. Note that the code has been tested with `v3.6.0` and `v3.9.0`, but fails with `v3.4.0`. We assume `CUTLASS>=v3.6.0` works fine.  
 
-The code onlu supports `sm_80, sm_86, sm_89` now, and the evaluation enviroments include NVIDIA RTX 3090, RTX 4090, A800, and A100 GPUs. The versions of CUDA Toolkit include `CUDA 12.1, 12.2`.
+The code only supports `sm_80, sm_86, sm_89` now, and the evaluation enviroments include NVIDIA RTX 3090, RTX 4090, A800, and A100 GPUs. The versions of CUDA Toolkit include `CUDA 12.1, 12.2`.
 
 ### Install
 First, pull the repo:
@@ -107,7 +107,7 @@ Currently the repo supports two ways to generate the proper configs for GEMMs fo
     $ cd tune
 ```
 
-1. Using the [CUTLASS Profiler](https://github.com/NVIDIA/cutlass/blob/main/media/docs/cpp/profiler.md). Follow the README and wirte the profiling results in `$CSV_PATH/*.csv`. Then, generate the `.json` file in configs. 
+1. Using the [CUTLASS Profiler](https://github.com/NVIDIA/cutlass/blob/main/media/docs/cpp/profiler.md). Follow the README and write the profiling results in `$CSV_PATH/*.csv`. Then, generate the `.json` file in configs. 
 ```shell
     $ python gen_config.py --m $M --n $N --k $K --path $CSV_PATH
 ```
@@ -120,7 +120,7 @@ Currently the repo supports two ways to generate the proper configs for GEMMs fo
 ### Tune
 Tune the wave group size. Note multiple GPUs are needed in this program and the enviroment variable `CUDA_VISIBLE_DEVICES` must be set, as we use the `spawn` method (torch.multiprocessing.spawn) and the rank and world size are explicitly determined. 
 
-1. The repo provides both the exhaustive and predictive methods, and the latter is recommended when `MxN>4096x4096`. If the predictive method is chosen, please generate the bandwidth curve first. Given GPU and primitive, the bandwidth curve needs only one generation. 
+1. The repo provides both the exhaustive and predictive search methods, and the latter is recommended when `MxN>4096x4096`. If the predictive method is chosen, please generate the bandwidth curve first. Given GPU and communication primitive, the bandwidth curve needs only one generation. 
 ```shell
     $ CUDA_VISIBLE_DEVICES=0,1 python bandwidth.py --comm_op all_reduce
 ```
@@ -128,7 +128,7 @@ Tune the wave group size. Note multiple GPUs are needed in this program and the 
 ```shell
     $ CUDA_VISIBLE_DEVICES=0,1 python search.py --m $M --n $N --k $K --comm_op all_reduce --predictive_search True
 ```
-3. The generated solution is written into the same `.json` file. 
+3. The generated solution is written into the corresponding `.json` file. 
 
 ### Speed Test
 Open the test dir and run the script.
