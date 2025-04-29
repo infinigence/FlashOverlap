@@ -7,7 +7,7 @@
 <a href="https://zhuanlan.zhihu.com/p/1897633068380054002?share_code=1nCLEM5AgyjRb&utm_psn=1900536763014963236&utm_source=wechat_timeline&utm_medium=social&s_r=0">
     <img src="https://img.shields.io/badge/FlashOverlap-ZHIHU-blue"></a>
 
-A Lightweight Design for Computation-Communication Overlap.
+😊 ***A Lightweight Design for Computation-Communication Overlap***
 </div>
 
 ## Milestone
@@ -58,6 +58,7 @@ Then the operators are registered as torch.class, and in Python code, the `.so` 
 ```
 
 ## Quick Start
+⚠️ ***Notice:*** the boundary handling is not implemented, thus the repo only supports regular GEMM shapes now (`M, N, K % 128 == 0`). 
 ### File Structure
 ```plaintext
 .
@@ -107,10 +108,10 @@ Currently the repo supports two ways to generate the proper configs for GEMMs fo
 
 1. Using the [CUTLASS Profiler](https://github.com/NVIDIA/cutlass/blob/main/media/docs/cpp/profiler.md). Follow the README and wirte the profiling results in `$CSV_PATH/*.csv`. Then, generate the `.json` file in configs. 
 ```shell
-    $ python profile_config.py --m $M --n $N --k $K --path $CSV_PATH
+    $ python gen_config.py --m $M --n $N --k $K --path $CSV_PATH
 ```
 
-2. Using the customized profiler for a specific shape. The profiling process finishes within minutes. 
+2. Using the customized profiler for a specific shape. The profiling process finishes within minutes. (This method has not been evaluated on RTX 4090 and RTX 3090 yet, will be updated soon.)
 ```shell
     $ python profile_config.py --m $M --n $N --k $K
 ```
