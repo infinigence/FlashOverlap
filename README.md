@@ -122,7 +122,7 @@ Currently the repo supports two ways to generate the proper configs for GEMMs fo
 ```
 
 ### Tune
-Tune the wave group size. Note multiple GPUs are needed in this program and the enviroment variable `CUDA_VISIBLE_DEVICES` must be set, as we use the `spawn` method (torch.multiprocessing.spawn) and the rank and world size are explicitly determined. 
+Tune the wave group size. Note multiple GPUs are needed in this program and the environment variable `CUDA_VISIBLE_DEVICES` must be set, as we use the `spawn` method (torch.multiprocessing.spawn) and the rank and world size are explicitly determined. 
 
 1. The repo provides both the exhaustive and predictive search methods, and the latter is recommended when `MxN>4096x4096`. If the predictive method is chosen, please generate the bandwidth curve first. Given GPU and communication primitive, the bandwidth curve needs only one generation. 
 ```shell
