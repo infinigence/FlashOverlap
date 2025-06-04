@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="./docs/_static/image/FlashOverlap_LOGO.png" width="50" height="50">
+
 # ***FlashOverlap*** 
 
 <a href="https://arxiv.org/abs/2504.19519">
