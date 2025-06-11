@@ -73,7 +73,7 @@ __device__ __forceinline__ float blockReduceSum(float reducing, float *shared_me
 {
     // Helper function for reduce softmax exp sum.
     const int32_t WPT = blockDim.x / 32;
-    int32_t WPTB = WPT == 20 ? 32 : WPT;
+    int32_t WPTB = 32 / (32 / WPT);
     const int32_t lane_id = threadIdx.x % 32;
     const int32_t warp_id = threadIdx.x / 32;
 
@@ -99,6 +99,7 @@ __device__ __forceinline__ half blockReduceSum(half reducing, half *shared_mem)
 {
     // Helper function for reduce softmax exp sum.
     const int32_t WPT = blockDim.x / 32;
+    int32_t WPTB = 32 / (32 / WPT);
     const int32_t lane_id = threadIdx.x % 32;
     const int32_t warp_id = threadIdx.x / 32;
 
@@ -110,10 +111,10 @@ __device__ __forceinline__ half blockReduceSum(half reducing, half *shared_mem)
     if (lane_id == 0) shared_mem[warp_id] = reducing;
     __syncthreads();
 
-    if (lane_id < WPT) reducing = shared_mem[lane_id];
+    if (lane_id < WPTB) reducing = lane_id < WPT ? shared_mem[lane_id] : 0.0f;
 
 # pragma unroll
-    for (int32_t mask = WPT / 2; mask >= 1; mask /= 2) {
+    for (int32_t mask = WPTB / 2; mask >= 1; mask /= 2) {
         reducing = __hadd(reducing, __shfl_xor_sync(uint32_t(-1), reducing, mask));
     }
     reducing = __shfl_sync(uint32_t(-1), reducing, 0);
