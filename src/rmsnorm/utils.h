@@ -111,7 +111,7 @@ __device__ __forceinline__ half blockReduceSum(half reducing, half *shared_mem)
     if (lane_id == 0) shared_mem[warp_id] = reducing;
     __syncthreads();
 
-    if (lane_id < WPTB) reducing = lane_id < WPT ? shared_mem[lane_id] : 0.0f;
+    if (lane_id < WPTB) reducing = lane_id < WPT ? shared_mem[lane_id] : __float2half(0.0f);
 
 # pragma unroll
     for (int32_t mask = WPTB / 2; mask >= 1; mask /= 2) {
