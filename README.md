@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="./docs/_static/image/FlashOverlap_LOGO.png" width="50" height="50">
+<img src="./docs/_static/image/FlashOverlap_LOGO.png" width="75" height="50">
 
 # ***FlashOverlap*** 
 
@@ -20,7 +20,8 @@ The figure shows a typical timeline of computation-communication overlap in Flas
 - [x] demo for GEMM+AllReduce
 - [x] predictive search for wave grouping
 - [ ] multi-node example
-- [ ] demo for GEMM+ReduceScatter, GEMM+AlltoAll
+- [x] demo for GEMM+ReduceScatter
+- [ ] demo for GEMM+AlltoAll
 - [ ] more platforms (e.g., hopper GPU)
 - [ ] end2end example
 
@@ -74,7 +75,8 @@ Then the operators are registered as torch.class, and in Python code, the `.so` 
 │       └── FindNCCL.cmake
 ├── configs                   // To store GEMM and overlapping configs
 ├── example
-│   ├── correctness.py        // Check correctness of GEMM+AllReduce+RMSNorm
+│   ├── correctness_ar.py        // Check correctness of GEMM+AllReduce+RMSNorm
+│   ├── correctness_rs.py        // Check correctness of GEMM+ReduceScatter+RMSNorm
 ├── src
 │   ├── 3rdparty
 │   ├── gemm                  // CUTLASS GEMM Wrappers
@@ -132,7 +134,7 @@ Tune the wave group size. Note multiple GPUs are needed in this program and the 
 ```
 2. Two search methods share the same script, `--predictive_search` should be specified if used.
 ```shell
-    $ CUDA_VISIBLE_DEVICES=0,1 python search.py --m $M --n $N --k $K --comm_op all_reduce --predictive_search True
+    $ CUDA_VISIBLE_DEVICES=0,1 python search.py --m $M --n $N --k $K --comm_op {all_reduce, reduce_scatter} --predictive_search True
 ```
 3. The generated solution is written into the corresponding `.json` file. 
 
@@ -140,7 +142,7 @@ Tune the wave group size. Note multiple GPUs are needed in this program and the 
 Open the test dir and run the script.
 ```shell
     $ cd ./test
-    $ CUDA_VISIBLE_DEVICES=0,1 python test.py --m $M --n $N --k $K
+    $ CUDA_VISIBLE_DEVICES=0,1 python test.py --m $M --n $N --k $K --comm_op {all_reduce, reduce_scatter}
 ```
 
 ### Correctness Test
@@ -151,7 +153,7 @@ Open the test dir and run the script.
 
 2. Evaluate the correctness of GEMM+AllReduce+RMSNorm. The RMSNorm must be included as the tile order is corrected in the kernel. 
 ```shell
-    $ CUDA_VISIBLE_DEVICES=0,1 python correctness.py --m $M --n $N --k $K
+    $ CUDA_VISIBLE_DEVICES=0,1 python correctness_{ar, rs}.py --m $M --n $N --k $K
 ```
 3. We define the `ReorderRMSNorm` class in `RMSNorm.py` and the `OverlapRowParallelLayer` class in `RowParallelLayer.py`, which can replace the `RMSNorm` class and `RowParallelLayer` class, respectively. It's a simple example of usage in end-to-end inference or training. 
 

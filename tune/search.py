@@ -50,10 +50,39 @@ def save_solution(M: int, N: int, K: int, BM: int, BN: int, gemm_dur: float, Alg
     with open(file_path, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=4)
 
+def generate_row_remap_array(
+    M, N, BM, BN, S_list, world_size, device="cuda"
+):
+    total_tiles = (M * N) // (BM * BN)
+    assert sum(S_list) == total_tiles, "sum(S_list) must equal total number of tiles"
+    
+    original_row_ids = torch.arange(M * N // BN, dtype=torch.int, device=device)
+    reordered_row_id = torch.empty_like(original_row_ids)
+    
+    current_row = 0
+    for S in S_list:
+        chunk_size = S * BM
+        chunk_row_ids = original_row_ids[current_row : current_row + chunk_size]
+        
+        # Compute row_id % world_size for the current chunk
+        mod_values = chunk_row_ids % world_size
+        
+        # Sort the chunk based on mod_values (stable sort)
+        _, sorted_indices = torch.sort(mod_values, stable=True)
+        reordered_chunk = chunk_row_ids[sorted_indices]
+        
+        reordered_row_id[current_row : current_row + chunk_size] = reordered_chunk
+        current_row += chunk_size
+    
+    # Compute remap: remap[original_row_id] = new_row_id
+    remap = torch.empty_like(original_row_ids)
+    remap[reordered_row_id] = torch.arange(len(reordered_row_id), dtype=torch.int, device=device)
+    
+    return remap
 
 def compute_hint_process(rank, world_size, nccl_id,
     M: int, N: int, K: int,
-    BM: int, BN: int, Algo: list, wSize: int,
+    BM: int, BN: int, Algo: list, wSize: int, comm_op: str, 
     result_dict):
 
     TileNum = div_up(M, BM) * div_up(N, BN)
@@ -82,17 +111,36 @@ def compute_hint_process(rank, world_size, nccl_id,
     MonitoredMatrix = torch.zeros(((M+BM-1)//BM + 1, (N+BN-1)//BN), dtype=torch.int, device="cuda") # TODO: We should put it in class
     ReorderedArray = torch.arange(0, TileNum, dtype=torch.int, device="cuda").reshape(((M+BM-1)//BM, (N+BN-1)//BN))
 
+    if comm_op == "reduce_scatter":
+        D = torch.empty((M // world_size, N), dtype=torch.float16, device="cuda")
+        RowArray = generate_row_remap_array(M, N, BM, BN, cSeg, world_size)
+
     _warm_up = 100
     _sample = 10
 
-    for _ in range(_warm_up):
-        gemm_class.gemm_allreduce_overlap(A, B, C, MonitoredMatrix, ReorderedArray, 1, cSeg_CPU, cSeg_GPU, Algo, True)
+    if comm_op == "all_reduce":
+        for _ in range(_warm_up):
+            gemm_class.gemm_allreduce_overlap(A, B, C, MonitoredMatrix, ReorderedArray, 1, cSeg_CPU, cSeg_GPU, Algo, True)
+        
+        samples = torch.empty((_sample, TileNum), dtype=torch.int, device="cuda")
+        for i in range(_sample):
+            MonitoredMatrix[0] = 0
+            gemm_class.gemm_allreduce_overlap(A, B, C, MonitoredMatrix, ReorderedArray, 1, cSeg_CPU, cSeg_GPU, Algo, True)
+            samples[i, :] = MonitoredMatrix[1:, :].view(-1)
     
-    samples = torch.empty((_sample, TileNum), dtype=torch.int, device="cuda")
-    for i in range(_sample):
-        MonitoredMatrix[0] = 0
-        gemm_class.gemm_allreduce_overlap(A, B, C, MonitoredMatrix, ReorderedArray, 1, cSeg_CPU, cSeg_GPU, Algo, True)
-        samples[i, :] = MonitoredMatrix[1:, :].view(-1)
+    elif comm_op == "reduce_scatter":
+        for _ in range(_warm_up):
+            gemm_class.gemm_reducescatter_overlap(A, B, C, D, MonitoredMatrix, ReorderedArray, RowArray, 1, cSeg_CPU, cSeg_GPU, Algo, True)
+        
+        samples = torch.empty((_sample, TileNum), dtype=torch.int, device="cuda")
+        for i in range(_sample):
+            MonitoredMatrix[0] = 0
+            gemm_class.gemm_reducescatter_overlap(A, B, C, D, MonitoredMatrix, ReorderedArray, RowArray, 1, cSeg_CPU, cSeg_GPU, Algo, True)
+            samples[i, :] = MonitoredMatrix[1:, :].view(-1)
+
+    else:
+        assert comm_op in ["all_reduce", "reduce_scatter"], \
+            f"comm_op must be 'all_reduce' or 'reduce_scatter', but got '{comm_op}'"
 
     hint = []
     is_consistency = True
@@ -109,7 +157,7 @@ def compute_hint_process(rank, world_size, nccl_id,
     result_dict[rank] = (is_consistency, hint)
 
 def compute_hint(M: int, N: int, K: int,
-    BM: int, BN: int, Algo: list, wSize: int):
+    BM: int, BN: int, Algo: list, wSize: int, comm_op: str):
     world_size = torch.cuda.device_count()
     if world_size < 2:
         raise RuntimeError("At least 2 GPUs are required for this program.")
@@ -123,7 +171,7 @@ def compute_hint(M: int, N: int, K: int,
 
     mp.spawn(
             compute_hint_process,
-            args=(world_size, nccl_id, M, N, K, BM, BN, Algo, wSize, result_dict),
+            args=(world_size, nccl_id, M, N, K, BM, BN, Algo, wSize, comm_op, result_dict),
             nprocs=world_size
         )
 
@@ -229,38 +277,73 @@ def perf_running_process(rank, world_size, nccl_id,
 
     MonitoredMatrix = torch.zeros(((N+BN-1)//BN), dtype=torch.int, device="cuda")
     ReorderedArray = reorder_indices(TileNum, hint).reshape(((M+BM-1)//BM, (N+BN-1)//BN))
+
+    if comm_op == "reduce_scatter":
+        D = torch.empty((M // world_size, N), dtype=torch.float16, device="cuda")
+        RowArray = generate_row_remap_array(M, N, BM, BN, cSeg, world_size)
     
     _warm_up = 20
     _freq = 200
 
     if len(cSeg) == 1:
         # No overlapping
-        for _ in range(_warm_up):
+        if comm_op == "all_reduce":
+            for _ in range(_warm_up):
+                gemm_class.gemm_allreduce(A, B, C, Algo)
+
             gemm_class.gemm_allreduce(A, B, C, Algo)
 
-        gemm_class.gemm_allreduce(A, B, C, Algo)
+            start_event = [torch.cuda.Event(enable_timing=True) for i in range(_freq)]
+            end_event = [torch.cuda.Event(enable_timing=True) for i in range(_freq)]
+            for i in range(_freq):
+                start_event[i].record()
+                gemm_class.gemm_allreduce(A, B, C, Algo)
+                end_event[i].record()
+            torch.cuda.synchronize()
+            dur = torch.tensor([s.elapsed_time(e) for s, e in zip(start_event, end_event)], dtype=torch.float)
+        elif comm_op == "reduce_scatter":
+            for _ in range(_warm_up):
+                gemm_class.gemm_reducescatter(A, B, C, D, Algo)
 
-        start_event = [torch.cuda.Event(enable_timing=True) for i in range(_freq)]
-        end_event = [torch.cuda.Event(enable_timing=True) for i in range(_freq)]
-        for i in range(_freq):
-            start_event[i].record()
-            gemm_class.gemm_allreduce(A, B, C, Algo)
-            end_event[i].record()
-        torch.cuda.synchronize()
-        dur = torch.tensor([s.elapsed_time(e) for s, e in zip(start_event, end_event)], dtype=torch.float)
+            MonitoredMatrix[0] = 0
+            gemm_class.gemm_reducescatter(A, B, C, D, Algo)
+
+            start_event = [torch.cuda.Event(enable_timing=True) for i in range(_freq)]
+            end_event = [torch.cuda.Event(enable_timing=True) for i in range(_freq)]
+            for i in range(_freq):
+                start_event[i].record()
+                gemm_class.gemm_reducescatter(A, B, C, D, Algo)
+                end_event[i].record()
+            torch.cuda.synchronize()
+            dur = torch.tensor([s.elapsed_time(e) for s, e in zip(start_event, end_event)], dtype=torch.float)
 
     else:
-        for _ in range(_warm_up):
-            gemm_class.gemm_allreduce_overlap(A, B, C, MonitoredMatrix, ReorderedArray, 1, cSeg_CPU, cSeg_GPU, Algo, False)
+        if comm_op == "all_reduce":
+            for _ in range(_warm_up):
+                gemm_class.gemm_allreduce_overlap(A, B, C, MonitoredMatrix, ReorderedArray, 1, cSeg_CPU, cSeg_GPU, Algo, False)
 
-        start_event = [torch.cuda.Event(enable_timing=True) for i in range(_freq)]
-        end_event = [torch.cuda.Event(enable_timing=True) for i in range(_freq)]
-        for i in range(_freq):
-            start_event[i].record()
-            gemm_class.gemm_allreduce_overlap(A, B, C, MonitoredMatrix, ReorderedArray, 1, cSeg_CPU, cSeg_GPU, Algo, False)
-            end_event[i].record()
-        torch.cuda.synchronize()
-        dur = torch.tensor([s.elapsed_time(e) for s, e in zip(start_event, end_event)], dtype=torch.float)
+            start_event = [torch.cuda.Event(enable_timing=True) for i in range(_freq)]
+            end_event = [torch.cuda.Event(enable_timing=True) for i in range(_freq)]
+            for i in range(_freq):
+                start_event[i].record()
+                gemm_class.gemm_allreduce_overlap(A, B, C, MonitoredMatrix, ReorderedArray, 1, cSeg_CPU, cSeg_GPU, Algo, False)
+                end_event[i].record()
+            torch.cuda.synchronize()
+            dur = torch.tensor([s.elapsed_time(e) for s, e in zip(start_event, end_event)], dtype=torch.float)
+        elif comm_op == "reduce_scatter":
+            for _ in range(_warm_up):
+                gemm_class.gemm_reducescatter_overlap(A, B, C, D, MonitoredMatrix, ReorderedArray, RowArray, 1, cSeg_CPU, cSeg_GPU, Algo, False)
+
+            start_event = [torch.cuda.Event(enable_timing=True) for i in range(_freq)]
+            end_event = [torch.cuda.Event(enable_timing=True) for i in range(_freq)]
+            for i in range(_freq):
+                start_event[i].record()
+                gemm_class.gemm_reducescatter_overlap(A, B, C, D, MonitoredMatrix, ReorderedArray, RowArray, 1, cSeg_CPU, cSeg_GPU, Algo, False)
+                end_event[i].record()
+            torch.cuda.synchronize()
+            dur = torch.tensor([s.elapsed_time(e) for s, e in zip(start_event, end_event)], dtype=torch.float)
+        else:
+            dur = torch.zeros((_freq))
 
     result_dict[rank] = torch.mean(dur).item()
     
@@ -301,7 +384,7 @@ def integer_partitions(n):
     helper(n, [])
     return result
 
-def optimize_exhaustive(M: int, N: int, K: int, comm_op: str):
+def exhaustive_search(M: int, N: int, K: int, comm_op: str):
     # load the .json file
     BM_list, BN_list, gemm_dur_list, Algo_list = load_json(M, N, K)
 
@@ -321,7 +404,7 @@ def optimize_exhaustive(M: int, N: int, K: int, comm_op: str):
         wave_num = div_up(tile_num, (sm_count - 2))
 
         #compute hint
-        result = compute_hint(M, N, K, BM, BN, Algo, (sm_count - 2))
+        result = compute_hint(M, N, K, BM, BN, Algo, (sm_count - 2), comm_op)
 
         if result[0] == True:
             hint = result[1]
@@ -378,7 +461,7 @@ def fast_search(M: int, N: int, K: int, comm_array: torch.Tensor, comm_op: str):
         min_group_size = div_up(wave_num, 10)
 
         #compute hint
-        result = compute_hint(M, N, K, BM, BN, Algo, min_group_size * (sm_count - 2))
+        result = compute_hint(M, N, K, BM, BN, Algo, min_group_size * (sm_count - 2), comm_op)
 
         if result[0] == True:
             hint = result[1]
@@ -439,8 +522,7 @@ def main():
         fast_search(args.m, args.n, args.k, comm_array, args.comm_op)
     else:
         # compute the optimal solution
-        optimize_exhaustive(args.m, args.n, args.k, args.comm_op)
-
+        exhaustive_search(args.m, args.n, args.k, args.comm_op)
 
 if __name__ == "__main__":
     main()

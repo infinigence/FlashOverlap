@@ -3,6 +3,7 @@
 
 #include "tiling/gemm_tiling.cuh"
 #include "tiling/signal_tiling.cuh"
+#include "tiling/scatter_tiling.cuh"
 
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -78,7 +79,8 @@ void OverlapImpl::GemmAllReduce(at::Tensor A, at::Tensor B, at::Tensor C, int64_
     NCCL_CHECK(ncclAllReduce((void *)c_ptr, (void *)c_ptr, (M * N), ncclFloat16, ncclSum, this->comm, this->gemm_stream));
 }
 
-void OverlapImpl::GemmReduceScatter(at::Tensor A, at::Tensor B, at::Tensor C, int64_t Algo){
+void OverlapImpl::GemmReduceScatter(
+        at::Tensor A, at::Tensor B, at::Tensor C, at::Tensor D, int64_t Algo){
 
     int M = A.size(0);
     int K = A.size(1);
@@ -87,13 +89,14 @@ void OverlapImpl::GemmReduceScatter(at::Tensor A, at::Tensor B, at::Tensor C, in
     half* a_ptr = reinterpret_cast<half *>(A.data_ptr<at::Half>());
     half* b_ptr = reinterpret_cast<half *>(B.data_ptr<at::Half>());
     half* c_ptr = reinterpret_cast<half *>(C.data_ptr<at::Half>());
+    half* d_ptr = reinterpret_cast<half *>(D.data_ptr<at::Half>());
 
     gemm_func_table[Algo](
         M, N, K, a_ptr, b_ptr, c_ptr, this->gemm_stream
     );
 
     size_t recvcount = (M * N) / this->my_size;
-    NCCL_CHECK(ncclReduceScatter((void *)c_ptr, (void *)(c_ptr + this->my_rank * recvcount), recvcount, 
+    NCCL_CHECK(ncclReduceScatter((void *)c_ptr, (void *)d_ptr, recvcount, 
         ncclFloat16, ncclSum, this->comm, this->gemm_stream));
 }
 
@@ -251,6 +254,63 @@ void OverlapImpl::GemmAllReduceOverlap(
         kernel_wait_flag<<<1, 1, 0, this->comm_stream>>> (this_seg, (mm_ptr + iter));
         // Communicate the data
         NCCL_CHECK(ncclAllReduce((void *)(c_ptr + acc_addr), (void *)(c_ptr + acc_addr), commSize, ncclFloat16, ncclSum, this->comm, this->comm_stream));
+        acc_addr += commSize;
+    }
+
+    cudaEventCreateWithFlags(&this->gemm_finished, cudaEventDisableTiming);
+    cudaEventRecord(this->gemm_finished, this->comm_stream);
+    cudaStreamWaitEvent(this->gemm_stream, this->gemm_finished, 0);
+    cudaEventDestroy(this->gemm_finished);
+}
+
+void OverlapImpl::GemmReduceScatterOverlap(
+        at::Tensor A,  // M, K
+        at::Tensor B,  // N, K
+        at::Tensor C,  // M, N
+        at::Tensor D,  // M / world_size, N
+        at::Tensor MM, // TM + 1, TN
+        at::Tensor RA, // TM, TN
+        at::Tensor RE, // M
+        int64_t rLDN, 
+        at::Tensor cSEG_CPU, // SegSize, how many communication segments
+        at::Tensor cSEG_GPU, // SegSize, how many communication segments, on GPU
+        int64_t Algo, 
+        bool if_monitor
+        ){
+
+    int M = A.size(0);
+    int K = A.size(1);
+    int N = B.size(0);
+
+    int TM = RA.size(0);
+    int TN = RA.size(1);
+    int TileNum = TM * TN;
+
+    int SegSize = cSEG_GPU.size(0);
+
+    half* a_ptr = reinterpret_cast<half *>(A.data_ptr<at::Half>());
+    half* b_ptr = reinterpret_cast<half *>(B.data_ptr<at::Half>());
+    half* c_ptr = reinterpret_cast<half *>(C.data_ptr<at::Half>());
+    half* d_ptr = reinterpret_cast<half *>(D.data_ptr<at::Half>());
+    int* mm_ptr = MM.data_ptr<int>();
+    int* ra_ptr = RA.data_ptr<int>();
+    int* re_ptr = RE.data_ptr<int>();
+
+    int* cseg_cpu_ptr = cSEG_CPU.data_ptr<int>();
+    int* cseg_gpu_ptr = cSEG_GPU.data_ptr<int>();
+
+    int acc_addr = 0;
+    scatter_func_table[Algo](
+        M, N, K, rLDN, cseg_gpu_ptr, a_ptr, b_ptr, c_ptr, mm_ptr, ra_ptr, re_ptr, if_monitor, this->gemm_stream
+    );
+    for (int iter = 0; iter < SegSize; iter++){
+        int this_seg = cseg_cpu_ptr[iter];
+        int commSize = M * N / TileNum * this_seg;
+        // The signal is reset by the wait kernel
+        kernel_wait_flag<<<1, 1, 0, this->comm_stream>>> (this_seg, (mm_ptr + iter));
+        // Communicate the data
+        NCCL_CHECK(ncclReduceScatter((void *)(c_ptr + acc_addr), (void *)(d_ptr + acc_addr / this->my_size), 
+            (commSize / this->my_size), ncclFloat16, ncclSum, this->comm, this->comm_stream));
         acc_addr += commSize;
     }
 

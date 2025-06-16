@@ -7,6 +7,7 @@ import os
 import json
 from RMSNorm import RMSNorm, ReorderRMSNorm
 from RowParallelLinear import RowParallelLayer, OverlapRowParallelLayer
+from utils import reorder_rows_by_world_size
 
 torch.ops.load_library("../build/lib/libst_pybinding.so")
 
@@ -21,19 +22,15 @@ def create_tp_group(world_size, rank, tp_size):
 def per_gpu_process(rank, world_size, nccl_id, M, N, K, config):
     torch.cuda.set_device(rank)
 
-    BM = config["BM"]
-    BN = config["BN"]
-    hint = config["hint"]
-    cSeg = config["cSeg"]
-    Algo = config["Algo"]
-
-    A = torch.ones((M, K), dtype=torch.float16, device="cuda")
-    B = torch.ones((N, K), dtype=torch.float16, device="cuda")
-    W = torch.ones((N), dtype=torch.float16, device="cuda").normal_(mean=0., std=0.5)
+    A0 = torch.ones((M, K), dtype=torch.float16, device="cuda").normal_(mean=0., std=1.0)
+    A1 = reorder_rows_by_world_size(A0, world_size)
+    B = torch.ones((N, K), dtype=torch.float16, device="cuda").normal_(mean=0., std=1.0)
+    W = torch.ones((N), dtype=torch.float16, device="cuda").normal_(mean=0., std=1.0)
     
     rmsnorm_layer = RMSNorm(N)
     rmsnorm_layer.weight = nn.Parameter(W)
-    reorder_rmsnorm_layer = ReorderRMSNorm(N, M, BM, BN, hint)
+    reorder_rmsnorm_layer = ReorderRMSNorm(
+        N, M // world_size, config["BM"] // world_size, config["BN"], config["hint"])
     reorder_rmsnorm_layer.weight = nn.Parameter(W)
     
     os.environ["RANK"] = str(rank)
@@ -42,22 +39,24 @@ def per_gpu_process(rank, world_size, nccl_id, M, N, K, config):
     os.environ["MASTER_PORT"] = "23456"
     dist.init_process_group(backend="nccl", init_method="env://")
     tp_group = create_tp_group(world_size, rank, world_size)
-    linear_layer = RowParallelLayer(K, N, tp_group)
+    linear_layer = RowParallelLayer(K, N, "reduce_scatter", tp_group)
     linear_layer.weight = nn.Parameter(B)
-    overlap_linear_layer = OverlapRowParallelLayer(rank, world_size, K, N, M, BM, BN, hint, cSeg, Algo, nccl_id)
+    overlap_linear_layer = OverlapRowParallelLayer(
+        rank, world_size, K, N, M, config, "reduce_scatter", nccl_id)
     overlap_linear_layer.weight = nn.Parameter(B)
 
     torch.cuda.synchronize()
-    x1 = linear_layer(A)
-    x2 = overlap_linear_layer(A)
+    x1 = linear_layer(A1)
+    x2 = overlap_linear_layer(A0)
 
     y1 = rmsnorm_layer(x1)
     y2 = reorder_rmsnorm_layer(x2)
 
-    all_close = torch.allclose(y1, y2, atol=1e-3, rtol=1e-2)
+    all_close = torch.allclose(y1, y2, atol=5e-2, rtol=5e-2)
     torch.cuda.synchronize()
+    dist.destroy_process_group()
     
-    print("[GEMM+AllReduce+RMSNorm] all close : ", all_close)
+    print("[GEMM+ReduceScatter+RMSNorm] all close : ", all_close)
 
 def main():
     parser = argparse.ArgumentParser()

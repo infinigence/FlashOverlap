@@ -26,8 +26,8 @@ void CutlassGemmAllReduceWrapper(const c10::intrusive_ptr<T>& self,
 
 template<typename T>
 void CutlassGemmReduceScatterWrapper(const c10::intrusive_ptr<T>& self, 
-    at::Tensor A, at::Tensor B, at::Tensor C, int64_t Algo){
-    self->GemmReduceScatter(A, B, C, Algo);
+    at::Tensor A, at::Tensor B, at::Tensor C, at::Tensor D, int64_t Algo){
+    self->GemmReduceScatter(A, B, C, D, Algo);
 }
 
 template<typename T>
@@ -44,8 +44,8 @@ void GemmAllReduceWrapper(const c10::intrusive_ptr<T>& self,
 
 template<typename T>
 void GemmReduceScatterWrapper(const c10::intrusive_ptr<T>& self, 
-    at::Tensor A, at::Tensor B, at::Tensor C){
-    self->GemmReduceScatter(A, B, C);
+    at::Tensor A, at::Tensor B, at::Tensor C, at::Tensor D){
+    self->GemmReduceScatter(A, B, C, D);
 }
 
 template<typename T>
@@ -81,6 +81,13 @@ void AllReduceOverlapWrapper(const c10::intrusive_ptr<T>& self,
     at::Tensor A, at::Tensor B, at::Tensor C, at::Tensor MM, at::Tensor RA, int64_t rLDN, 
     at::Tensor cSEG_CPU, at::Tensor cSEG_GPU, int64_t TilingAlgo, bool if_monitor){
     self->GemmAllReduceOverlap(A, B, C, MM, RA, rLDN, cSEG_CPU, cSEG_GPU, TilingAlgo, if_monitor);
+}
+
+template<typename T>
+void ReduceScatterOverlapWrapper(const c10::intrusive_ptr<T>& self, 
+    at::Tensor A, at::Tensor B, at::Tensor C, at::Tensor D, at::Tensor MM, at::Tensor RA, at::Tensor RE, int64_t rLDN, 
+    at::Tensor cSEG_CPU, at::Tensor cSEG_GPU, int64_t TilingAlgo, bool if_monitor){
+    self->GemmReduceScatterOverlap(A, B, C, D, MM, RA, RE, rLDN, cSEG_CPU, cSEG_GPU, TilingAlgo, if_monitor);
 }
 
 template<typename T>
@@ -124,6 +131,7 @@ TORCH_LIBRARY(flashoverlap_class, m) {
         .def("cutlass_init", &CutlassInitWrapper<OverlapImpl>)
         .def("cutlass_gemm", &CutlassGemmWrapper<OverlapImpl>)
         .def("gemm_allreduce_overlap", &AllReduceOverlapWrapper<OverlapImpl>)
+        .def("gemm_reducescatter_overlap", &ReduceScatterOverlapWrapper<OverlapImpl>)
         .def("nccl_init", &NcclInitWrapper<OverlapImpl>)
         .def("gemm_allreduce", &CutlassGemmAllReduceWrapper<OverlapImpl>)
         .def("gemm_reducescatter", &CutlassGemmReduceScatterWrapper<OverlapImpl>)

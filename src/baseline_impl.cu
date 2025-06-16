@@ -62,7 +62,12 @@ void BaselineImpl::GemmAllReduce(at::Tensor A, at::Tensor B, at::Tensor C){
     NCCL_CHECK(ncclAllReduce((void *)c_ptr, (void *)c_ptr, (M * N), ncclFloat16, ncclSum, this->comm, this->my_stream));
 }
 
-void BaselineImpl::GemmReduceScatter(at::Tensor A, at::Tensor B, at::Tensor C){
+void BaselineImpl::GemmReduceScatter(
+        at::Tensor A, // [M, K]
+        at::Tensor B, // [N, K]
+        at::Tensor C, // [M, N]
+        at::Tensor D  // [M / world_size, N]
+        ){
 
     // Check if NCCL is initilized
     if (this->comm == nullptr) {
@@ -80,6 +85,7 @@ void BaselineImpl::GemmReduceScatter(at::Tensor A, at::Tensor B, at::Tensor C){
 
     // prepare for NCCL
     half* c_ptr = reinterpret_cast<half *>(C.data_ptr<at::Half>());
+    half* d_ptr = reinterpret_cast<half *>(D.data_ptr<at::Half>());
 
     // Launch GEMM
     cublasGemmEx(this->my_handle, CUBLAS_OP_T, CUBLAS_OP_N, 
@@ -97,7 +103,7 @@ void BaselineImpl::GemmReduceScatter(at::Tensor A, at::Tensor B, at::Tensor C){
 
     // Launch AllReduce after GEMM
     size_t recvcount = (M * N) / this->my_size;
-    NCCL_CHECK(ncclReduceScatter((void *)c_ptr, (void *)(c_ptr + this->my_rank * recvcount), recvcount, 
+    NCCL_CHECK(ncclReduceScatter((void *)c_ptr, (void *)d_ptr, recvcount, 
         ncclFloat16, ncclSum, this->comm, this->my_stream));
 }
 

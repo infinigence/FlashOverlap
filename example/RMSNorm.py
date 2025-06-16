@@ -26,7 +26,6 @@ class ReorderRMSNorm(torch.nn.Module):
         self.bn = BN
         tm, tn = div_up(M, BM), div_up(dim, BN)
         self.reorder_array = reorder_indices(tm * tn, hint).reshape((tm, tn))
-        # self.reorder_array = torch.arange(0, tm * tn, dtype=torch.int, device="cuda").reshape((tm, tn))
 
     def forward(self, x):
         output = torch.empty((x.size(0), x.size(1)), dtype=torch.float16, device="cuda")

@@ -16,7 +16,7 @@ class BaselineImpl : public torch::CustomClassHolder {
         void CublasInit();
 
         void GemmAllReduce(at::Tensor A, at::Tensor B, at::Tensor C);
-        void GemmReduceScatter(at::Tensor A, at::Tensor B, at::Tensor C);
+        void GemmReduceScatter(at::Tensor A, at::Tensor B, at::Tensor C, at::Tensor D);
         void GemmAll2All(at::Tensor A, at::Tensor B, at::Tensor C, at::Tensor D, at::Tensor mLen_CPU);
         void Gemm(at::Tensor A, at::Tensor B, at::Tensor C);
 

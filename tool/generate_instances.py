@@ -81,3 +81,22 @@ with open('../src/inc/signal_instances.inc', 'w') as f_inc, \
         f_table.write(f"    &cutlass_gemm_signal<{args}>,\n")
 
     f_table.write("};\n")
+
+with open('../src/inc/scatter_instances.inc', 'w') as f_inc, \
+     open('../src/tiling/scatter_tiling.cuh', 'w') as f_table:
+
+    # 生成实例化代码
+    f_table.write("#include \"gemm_dispatcher.h\"\n\n")
+
+    f_table.write("ScatterFuncPtr scatter_func_table[] = {\n")
+
+    for idx, combo in enumerate(valid_combinations):
+        args = ', '.join(map(str, combo))
+        
+        # 写入实例化代码
+        f_inc.write(f'CUTLASS_GEMM_SCATTER_INIT({args});\n')
+        
+        # 写入函数指针表
+        f_table.write(f"    &cutlass_gemm_scatter<{args}>,\n")
+
+    f_table.write("};\n")

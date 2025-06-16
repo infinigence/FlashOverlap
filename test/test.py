@@ -38,6 +38,36 @@ def reorder_indices(S, hint):
     
     return torch.tensor(new_order, dtype=torch.int, device="cuda")
 
+def generate_row_remap_array(
+    M, N, BM, BN, S_list, world_size, device="cuda"
+):
+    total_tiles = (M * N) // (BM * BN)
+    assert sum(S_list) == total_tiles, "sum(S_list) must equal total number of tiles"
+    
+    original_row_ids = torch.arange(M * N // BN, dtype=torch.int, device=device)
+    reordered_row_id = torch.empty_like(original_row_ids)
+    
+    current_row = 0
+    for S in S_list:
+        chunk_size = S * BM
+        chunk_row_ids = original_row_ids[current_row : current_row + chunk_size]
+        
+        # Compute row_id % world_size for the current chunk
+        mod_values = chunk_row_ids % world_size
+        
+        # Sort the chunk based on mod_values (stable sort)
+        _, sorted_indices = torch.sort(mod_values, stable=True)
+        reordered_chunk = chunk_row_ids[sorted_indices]
+        
+        reordered_row_id[current_row : current_row + chunk_size] = reordered_chunk
+        current_row += chunk_size
+    
+    # Compute remap: remap[original_row_id] = new_row_id
+    remap = torch.empty_like(original_row_ids)
+    remap[reordered_row_id] = torch.arange(len(reordered_row_id), dtype=torch.int, device=device)
+    
+    return remap
+
 def perf_running_process(rank, world_size, nccl_id,
     M: int, N: int, K: int,
     BM: int, BN: int, Algo: int, cSeg: list, hint: list, 
@@ -64,34 +94,72 @@ def perf_running_process(rank, world_size, nccl_id,
     MonitoredMatrix = torch.zeros(((N+BN-1)//BN), dtype=torch.int, device="cuda")
     ReorderedArray = reorder_indices(TileNum, hint).reshape(((M+BM-1)//BM, (N+BN-1)//BN))
 
+    if comm_op == "reduce_scatter":
+        D = torch.empty((M // world_size, N), dtype=torch.float16, device="cuda")
+        RowArray = generate_row_remap_array(M, N, BM, BN, cSeg, world_size)
+    
+    _warm_up = WARM_UP
+    _freq = REP
+
     if len(cSeg) == 1:
         # No overlapping
-        for _ in range(WARM_UP):
+        if comm_op == "all_reduce":
+            for _ in range(_warm_up):
+                gemm_class.gemm_allreduce(A, B, C, Algo)
+
             gemm_class.gemm_allreduce(A, B, C, Algo)
 
-        gemm_class.gemm_allreduce(A, B, C, Algo)
+            start_event = [torch.cuda.Event(enable_timing=True) for i in range(_freq)]
+            end_event = [torch.cuda.Event(enable_timing=True) for i in range(_freq)]
+            for i in range(_freq):
+                start_event[i].record()
+                gemm_class.gemm_allreduce(A, B, C, Algo)
+                end_event[i].record()
+            torch.cuda.synchronize()
+            dur = torch.tensor([s.elapsed_time(e) for s, e in zip(start_event, end_event)], dtype=torch.float)
+        elif comm_op == "reduce_scatter":
+            for _ in range(_warm_up):
+                gemm_class.gemm_reducescatter(A, B, C, D, Algo)
 
-        start_event = [torch.cuda.Event(enable_timing=True) for i in range(REP)]
-        end_event = [torch.cuda.Event(enable_timing=True) for i in range(REP)]
-        for i in range(REP):
-            start_event[i].record()
-            gemm_class.gemm_allreduce(A, B, C, Algo)
-            end_event[i].record()
-        torch.cuda.synchronize()
-        dur = torch.tensor([s.elapsed_time(e) for s, e in zip(start_event, end_event)], dtype=torch.float)
+            MonitoredMatrix[0] = 0
+            gemm_class.gemm_reducescatter(A, B, C, D, Algo)
+
+            start_event = [torch.cuda.Event(enable_timing=True) for i in range(_freq)]
+            end_event = [torch.cuda.Event(enable_timing=True) for i in range(_freq)]
+            for i in range(_freq):
+                start_event[i].record()
+                gemm_class.gemm_reducescatter(A, B, C, D, Algo)
+                end_event[i].record()
+            torch.cuda.synchronize()
+            dur = torch.tensor([s.elapsed_time(e) for s, e in zip(start_event, end_event)], dtype=torch.float)
 
     else:
-        for _ in range(WARM_UP):
-            gemm_class.gemm_allreduce_overlap(A, B, C, MonitoredMatrix, ReorderedArray, 1, cSeg_CPU, cSeg_GPU, Algo, False)
+        if comm_op == "all_reduce":
+            for _ in range(_warm_up):
+                gemm_class.gemm_allreduce_overlap(A, B, C, MonitoredMatrix, ReorderedArray, 1, cSeg_CPU, cSeg_GPU, Algo, False)
 
-        start_event = [torch.cuda.Event(enable_timing=True) for i in range(REP)]
-        end_event = [torch.cuda.Event(enable_timing=True) for i in range(REP)]
-        for i in range(REP):
-            start_event[i].record()
-            gemm_class.gemm_allreduce_overlap(A, B, C, MonitoredMatrix, ReorderedArray, 1, cSeg_CPU, cSeg_GPU, Algo, False)
-            end_event[i].record()
-        torch.cuda.synchronize()
-        dur = torch.tensor([s.elapsed_time(e) for s, e in zip(start_event, end_event)], dtype=torch.float)
+            start_event = [torch.cuda.Event(enable_timing=True) for i in range(_freq)]
+            end_event = [torch.cuda.Event(enable_timing=True) for i in range(_freq)]
+            for i in range(_freq):
+                start_event[i].record()
+                gemm_class.gemm_allreduce_overlap(A, B, C, MonitoredMatrix, ReorderedArray, 1, cSeg_CPU, cSeg_GPU, Algo, False)
+                end_event[i].record()
+            torch.cuda.synchronize()
+            dur = torch.tensor([s.elapsed_time(e) for s, e in zip(start_event, end_event)], dtype=torch.float)
+        elif comm_op == "reduce_scatter":
+            for _ in range(_warm_up):
+                gemm_class.gemm_reducescatter_overlap(A, B, C, D, MonitoredMatrix, ReorderedArray, RowArray, 1, cSeg_CPU, cSeg_GPU, Algo, False)
+
+            start_event = [torch.cuda.Event(enable_timing=True) for i in range(_freq)]
+            end_event = [torch.cuda.Event(enable_timing=True) for i in range(_freq)]
+            for i in range(_freq):
+                start_event[i].record()
+                gemm_class.gemm_reducescatter_overlap(A, B, C, D, MonitoredMatrix, ReorderedArray, RowArray, 1, cSeg_CPU, cSeg_GPU, Algo, False)
+                end_event[i].record()
+            torch.cuda.synchronize()
+            dur = torch.tensor([s.elapsed_time(e) for s, e in zip(start_event, end_event)], dtype=torch.float)
+        else:
+            dur = torch.zeros((_freq))
 
     result_dict[rank] = torch.mean(dur).item()
     
@@ -130,19 +198,35 @@ def perf_comm_process(rank, world_size, nccl_id, M, N, comm_type, result_dict):
     comm_class.nccl_init(rank, world_size, nccl_id)
     comm_class.cutlass_init()
 
-    C = torch.empty((M, N), dtype=torch.float16, device="cuda").normal_(mean=0., std=0.5)
+    C = torch.empty((M, N), dtype=torch.float16, device="cuda")
+    if comm_type == "reduce_scatter":
+        D = torch.empty((M // world_size, N), dtype=torch.float16, device="cuda")
 
-    for _ in range(WARM_UP):
-        comm_class.nccl_allreduce(C)
-    start_event = [torch.cuda.Event(enable_timing=True) for i in range(REP)]
-    end_event = [torch.cuda.Event(enable_timing=True) for i in range(REP)]
-    for i in range(REP):
-        start_event[i].record()
-        comm_class.nccl_allreduce(C)
-        end_event[i].record()
-    torch.cuda.synchronize()
-    dur = torch.tensor([s.elapsed_time(e) for s, e in zip(start_event, end_event)], dtype=torch.float)
-    
+    if comm_type == "all_reduce":
+        for _ in range(WARM_UP):
+            comm_class.nccl_allreduce(C)
+        start_event = [torch.cuda.Event(enable_timing=True) for i in range(REP)]
+        end_event = [torch.cuda.Event(enable_timing=True) for i in range(REP)]
+        for i in range(REP):
+            start_event[i].record()
+            comm_class.nccl_allreduce(C)
+            end_event[i].record()
+        torch.cuda.synchronize()
+        dur = torch.tensor([s.elapsed_time(e) for s, e in zip(start_event, end_event)], dtype=torch.float)
+    elif comm_type == "reduce_scatter":
+        for _ in range(WARM_UP):
+            comm_class.nccl_reducescatter(C)
+        start_event = [torch.cuda.Event(enable_timing=True) for i in range(REP)]
+        end_event = [torch.cuda.Event(enable_timing=True) for i in range(REP)]
+        for i in range(REP):
+            start_event[i].record()
+            comm_class.nccl_reducescatter(C)
+            end_event[i].record()
+        torch.cuda.synchronize()
+        dur = torch.tensor([s.elapsed_time(e) for s, e in zip(start_event, end_event)], dtype=torch.float)
+    else:
+        dur = torch.zeros((REP))
+        
     result_dict[rank] = torch.mean(dur).item()
 
 def perf_comm(M: int, N: int, comm_type: str):
@@ -174,24 +258,42 @@ def perf_baseline_process(rank, world_size, nccl_id, M, N, K, comm_op, result_di
     B = torch.empty((N, K), dtype=torch.float16, device="cuda").normal_(mean=0., std=0.5)
     C = torch.empty((M, N), dtype=torch.float16, device="cuda")
 
+    if comm_op == "reduce_scatter":
+        D = torch.empty((M // world_size, N), dtype=torch.float16, device="cuda")
+
     # **** Init Baseline Class **** #
     gemm_comm = torch.classes.flashoverlap_class.BaselineImpl()
     gemm_comm.nccl_init(rank, world_size, nccl_id)
     gemm_comm.cublas_init()
 
-    # **** cuBLAS + NCCL **** #
-    for _ in range(WARM_UP):
-        gemm_comm.gemm_allreduce(A, B, C)
-    start_event = [torch.cuda.Event(enable_timing=True) for i in range(REP)]
-    end_event = [torch.cuda.Event(enable_timing=True) for i in range(REP)]
-    for i in range(REP):
-        start_event[i].record()
-        # torch.cuda.cudart().cudaProfilerStart()
-        gemm_comm.gemm_allreduce(A, B, C)
-        # torch.cuda.cudart().cudaProfilerStop()
-        end_event[i].record()
-    torch.cuda.synchronize()
-    dur = torch.tensor([s.elapsed_time(e) for s, e in zip(start_event, end_event)], dtype=torch.float)
+    if comm_op == "all_reduce":
+        for _ in range(WARM_UP):
+            gemm_comm.gemm_allreduce(A, B, C)
+        start_event = [torch.cuda.Event(enable_timing=True) for i in range(REP)]
+        end_event = [torch.cuda.Event(enable_timing=True) for i in range(REP)]
+        for i in range(REP):
+            start_event[i].record()
+            # torch.cuda.cudart().cudaProfilerStart()
+            gemm_comm.gemm_allreduce(A, B, C)
+            # torch.cuda.cudart().cudaProfilerStop()
+            end_event[i].record()
+        torch.cuda.synchronize()
+        dur = torch.tensor([s.elapsed_time(e) for s, e in zip(start_event, end_event)], dtype=torch.float)
+    elif comm_op == "reduce_scatter":
+        for _ in range(WARM_UP):
+            gemm_comm.gemm_reducescatter(A, B, C, D)
+        start_event = [torch.cuda.Event(enable_timing=True) for i in range(REP)]
+        end_event = [torch.cuda.Event(enable_timing=True) for i in range(REP)]
+        for i in range(REP):
+            start_event[i].record()
+            # torch.cuda.cudart().cudaProfilerStart()
+            gemm_comm.gemm_reducescatter(A, B, C, D)
+            # torch.cuda.cudart().cudaProfilerStop()
+            end_event[i].record()
+        torch.cuda.synchronize()
+        dur = torch.tensor([s.elapsed_time(e) for s, e in zip(start_event, end_event)], dtype=torch.float)
+    else:
+        dur = torch.zeros((REP))
     
     result_dict[rank] = torch.mean(dur).item()
 
@@ -231,9 +333,10 @@ def main():
     parser.add_argument('--m', type=int, default=4096)
     parser.add_argument('--k', type=int, default=8192)
     parser.add_argument('--n', type=int, default=8192)
+    parser.add_argument('--comm_op', type=str, default='all_reduce')
     args = parser.parse_args()
 
-    comm_op = 'all_reduce'
+    comm_op = args.comm_op
 
     m, n, k = args.m, args.n, args.k
 
