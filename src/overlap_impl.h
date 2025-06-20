@@ -22,6 +22,7 @@ class OverlapImpl : public torch::CustomClassHolder {
 
         void GemmAllReduceOverlap(at::Tensor A, at::Tensor B, at::Tensor C, at::Tensor MM, at::Tensor RA, int64_t rLDN, at::Tensor cSEG_CPU, at::Tensor cSEG_GPU, int64_t Algo, bool if_monitor);
         void GemmReduceScatterOverlap(at::Tensor A, at::Tensor B, at::Tensor C, at::Tensor D, at::Tensor MM, at::Tensor RA, at::Tensor RE, int64_t rLDN, at::Tensor cSEG_CPU, at::Tensor cSEG_GPU, int64_t Algo, bool if_monitor);
+        void GemmEqAll2AllOverlap(at::Tensor A, at::Tensor B, at::Tensor C, at::Tensor D, at::Tensor MM, at::Tensor RA, int64_t rLDN, at::Tensor cSEG_CPU, at::Tensor cSEG_GPU, at::Tensor mLen_CPU, int64_t Algo, bool if_monitor);
 
         void GemmAllReduce(at::Tensor A, at::Tensor B, at::Tensor C, int64_t Algo);
         void GemmReduceScatter(at::Tensor A, at::Tensor B, at::Tensor C, at::Tensor D, int64_t Algo);

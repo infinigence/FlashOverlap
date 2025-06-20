@@ -14,13 +14,17 @@ file(GLOB norm_files ${PROJECT_SOURCE_DIR}/src/rmsnorm/*.cu)
 add_library(norm STATIC ${norm_files})
 set_property(TARGET norm PROPERTY POSITION_INDEPENDENT_CODE ON)
 
+file(GLOB reorder_files ${PROJECT_SOURCE_DIR}/src/reorder/*.cu)
+add_library(reorder STATIC ${reorder_files})
+set_property(TARGET reorder PROPERTY POSITION_INDEPENDENT_CODE ON)
+
 add_library(baseline_impl baseline_impl.cu)
 set_property(TARGET baseline_impl PROPERTY POSITION_INDEPENDENT_CODE ON)
-target_link_libraries (baseline_impl PUBLIC gemm overlap norm)
+target_link_libraries (baseline_impl PUBLIC gemm overlap norm reorder)
 
 add_library(overlap_impl overlap_impl.cu)
 set_property(TARGET overlap_impl PROPERTY POSITION_INDEPENDENT_CODE ON)
-target_link_libraries (overlap_impl PUBLIC gemm overlap norm)
+target_link_libraries (overlap_impl PUBLIC gemm overlap norm reorder)
 
 add_library(nccl_tool nccl_utils.cu)
 set_property(TARGET nccl_tool PROPERTY POSITION_INDEPENDENT_CODE ON)

@@ -17,7 +17,7 @@
 #include "overlap_impl.h"
 
 #define DIV_UP(x, y) (((x) + (y) - 1) / (y))
-#define MAX_GROUP_SIZE 64
+#define MAX_WORLD_SIZE 8
 
 /// NIL Implementation: Overlap CUTLASS GEMM and NCCL AllReduce
 OverlapImpl::OverlapImpl(){
@@ -312,6 +312,79 @@ void OverlapImpl::GemmReduceScatterOverlap(
         NCCL_CHECK(ncclReduceScatter((void *)(c_ptr + acc_addr), (void *)(d_ptr + acc_addr / this->my_size), 
             (commSize / this->my_size), ncclFloat16, ncclSum, this->comm, this->comm_stream));
         acc_addr += commSize;
+    }
+
+    cudaEventCreateWithFlags(&this->gemm_finished, cudaEventDisableTiming);
+    cudaEventRecord(this->gemm_finished, this->comm_stream);
+    cudaStreamWaitEvent(this->gemm_stream, this->gemm_finished, 0);
+    cudaEventDestroy(this->gemm_finished);
+}
+
+void OverlapImpl::GemmEqAll2AllOverlap(
+        at::Tensor A,  // M, K
+        at::Tensor B,  // N, K
+        at::Tensor C,  // M, N
+        at::Tensor D, 
+        at::Tensor MM, // TM + 1, TN
+        at::Tensor RA, // TM, TN
+        int64_t rLDN, 
+        at::Tensor cSEG_CPU, // SegSize, how many communication segments
+        at::Tensor cSEG_GPU, // SegSize, how many communication segments, on GPU
+        at::Tensor mLen_CPU, // [I, world_size], it's symmetric with Equal A2A
+        int64_t Algo, 
+        bool if_monitor
+        ){
+
+    int M = A.size(0);
+    int K = A.size(1);
+    int N = B.size(0);
+
+    int TM = RA.size(0);
+    int TN = RA.size(1);
+    int TileNum = TM * TN;
+
+    int BM = M / TM;
+    int BN = N / TN;
+
+    int SegSize = cSEG_GPU.size(0);
+
+    half* a_ptr = reinterpret_cast<half *>(A.data_ptr<at::Half>());
+    half* b_ptr = reinterpret_cast<half *>(B.data_ptr<at::Half>());
+    half* c_ptr = reinterpret_cast<half *>(C.data_ptr<at::Half>());
+    half* d_ptr = reinterpret_cast<half *>(D.data_ptr<at::Half>());
+    int* mm_ptr = MM.data_ptr<int>();
+    int* ra_ptr = RA.data_ptr<int>();
+
+    int* cseg_cpu_ptr = cSEG_CPU.data_ptr<int>();
+    int* cseg_gpu_ptr = cSEG_GPU.data_ptr<int>();
+
+    // First SEND
+    int src_acc_addr[MAX_WORLD_SIZE] = {0};
+    // Then RECV
+    int dst_acc_addr[MAX_WORLD_SIZE] = {0};
+    int local_buffer_size = M * N / this->my_size;
+
+    signal_func_table[Algo](
+        M, N, K, rLDN, cseg_gpu_ptr, a_ptr, b_ptr, c_ptr, mm_ptr, ra_ptr, if_monitor, this->gemm_stream
+    );
+    for (int iter = 0; iter < SegSize; iter++){
+        int* mlen_cpu_ptr = mLen_CPU.data_ptr<int>() + iter * this->my_size;
+        int this_seg = cseg_cpu_ptr[iter];
+        // The signal is reset by the wait kernel
+        kernel_wait_flag<<<1, 1, 0, this->comm_stream>>> (this_seg, (mm_ptr + iter));
+
+        // Communicate the data
+        NCCL_CHECK(ncclGroupStart());
+        for (int i = 0; i < this->my_size; i++){
+            size_t sendcount = M * N / TileNum * mlen_cpu_ptr[i];
+            NCCL_CHECK(ncclSend((void *)(c_ptr + local_buffer_size * i + src_acc_addr[i]), sendcount, ncclFloat16, i, this->comm, this->comm_stream));
+            src_acc_addr[i] += sendcount;
+
+            size_t recvcount = M * N / TileNum * mlen_cpu_ptr[this->my_rank];
+            NCCL_CHECK(ncclRecv((void *)(d_ptr + local_buffer_size * i + dst_acc_addr[i]), recvcount, ncclFloat16, i, this->comm, this->comm_stream));
+            dst_acc_addr[i] += recvcount;
+        }
+        NCCL_CHECK(ncclGroupEnd());
     }
 
     cudaEventCreateWithFlags(&this->gemm_finished, cudaEventDisableTiming);

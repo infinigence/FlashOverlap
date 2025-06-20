@@ -2,6 +2,7 @@
 #include "overlap_impl.h"
 #include "nccl_utils.h"
 #include "rmsnorm/rmsnorm.h"
+#include "reorder/reorder.h"
 
 #include <torch/script.h>
 #include <torch/extension.h>
@@ -91,6 +92,13 @@ void ReduceScatterOverlapWrapper(const c10::intrusive_ptr<T>& self,
 }
 
 template<typename T>
+void EqAll2AllOverlapWrapper(const c10::intrusive_ptr<T>& self, 
+    at::Tensor A, at::Tensor B, at::Tensor C, at::Tensor D, at::Tensor MM, at::Tensor RA, int64_t rLDN, 
+    at::Tensor cSEG_CPU, at::Tensor cSEG_GPU, at::Tensor mLen_CPU, int64_t TilingAlgo, bool if_monitor){
+    self->GemmEqAll2AllOverlap(A, B, C, D, MM, RA, rLDN, cSEG_CPU, cSEG_GPU, mLen_CPU, TilingAlgo, if_monitor);
+}
+
+template<typename T>
 void NcclAllReduceWrapper(const c10::intrusive_ptr<T>& self, at::Tensor C){
     self->NcclAllReduce(C);
 }
@@ -132,6 +140,7 @@ TORCH_LIBRARY(flashoverlap_class, m) {
         .def("cutlass_gemm", &CutlassGemmWrapper<OverlapImpl>)
         .def("gemm_allreduce_overlap", &AllReduceOverlapWrapper<OverlapImpl>)
         .def("gemm_reducescatter_overlap", &ReduceScatterOverlapWrapper<OverlapImpl>)
+        .def("gemm_eq_all2all_overlap", &EqAll2AllOverlapWrapper<OverlapImpl>)
         .def("nccl_init", &NcclInitWrapper<OverlapImpl>)
         .def("gemm_allreduce", &CutlassGemmAllReduceWrapper<OverlapImpl>)
         .def("gemm_reducescatter", &CutlassGemmReduceScatterWrapper<OverlapImpl>)
@@ -147,4 +156,5 @@ TORCH_LIBRARY(flashoverlap_class, m) {
 TORCH_LIBRARY(flashoverlap_op, m) {
     m.def("generate_nccl_id", &generate_nccl_id);
     m.def("reorder_rmsnorm", &reorder_rmsnorm);
+    m.def("reorder", &reorder);
 }

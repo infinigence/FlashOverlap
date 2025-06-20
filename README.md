@@ -157,6 +157,31 @@ Open the test dir and run the script.
 ```
 3. We define the `ReorderRMSNorm` class in `RMSNorm.py` and the `OverlapRowParallelLayer` class in `RowParallelLayer.py`, which can replace the `RMSNorm` class and `RowParallelLayer` class, respectively. It's a simple example of usage in end-to-end inference or training. 
 
+### Ulysses-SP Adaption (Whole workflow)
+⚠️ ***Notice:*** This code is for input shape [2, 44, 80, 32, 64].
+
+0. Follow the install guide to compile FlashOverlap.
+
+1. Generate the GEMM config
+Use [CUTLASS Profiler](https://github.com/NVIDIA/cutlass/blob/main/media/docs/cpp/profiler.md). Follow the README and write the profiling results in `$CSV_PATH/*.csv`. Then, generate the `.json` file in configs. 
+```shell
+    $ cd tune
+    $ python gen_config.py --m $M --n $N --k $K --path $CSV_PATH
+```
+
+2. Exhaustive search for the group partition
+Use the customized script.
+```shell
+    $ python search_eq_a2a.py --m $M --n $N --k $K
+```
+
+3. Correctness + speed test
+Use the customized script.
+```shell
+    $ cd ../test
+    $ python test_eq_a2a.py
+```
+
 ## Citation
 ```
     @misc{hong2025flashoverlap,
