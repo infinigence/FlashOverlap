@@ -5,7 +5,7 @@ from utils import reorder_indices, div_up
 torch.ops.load_library("../build/lib/libst_pybinding.so")
 
 class RMSNorm(torch.nn.Module):
-    def __init__(self, dim: int, eps: float = 1e-6):
+    def __init__(self, dim: int, eps: float = 1e-5):
         super().__init__()
         self.eps = eps
         self.weight = nn.Parameter(torch.empty((dim), dtype=torch.float16, device="cuda").normal_(mean=0., std=0.5))

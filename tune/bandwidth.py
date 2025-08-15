@@ -74,7 +74,7 @@ def main():
     parser.add_argument('--comm_op', type=str, default="all_reduce")
     args = parser.parse_args()
 
-    data_sizes = [i for i in range(2**20, 2**27, 2**20)] 
+    data_sizes = [(int(2**(20 + 0.25*i)) // 1024 * 1024) for i in range(36)] 
     bandwidths = []
     size_len = len(data_sizes)
     comm_array = torch.zeros((size_len, 2))
@@ -82,7 +82,7 @@ def main():
         # 创建输入张量（torch.float16）
         input_data = torch.randn(size, dtype=torch.float16, device='cuda')
 
-        avg_time = perf_comm(128, size // 128, args.comm_op)
+        avg_time = perf_comm(1024, size // 1024, args.comm_op)
         
         # 计算带宽（单位：GB/s）
         data_size_bytes = input_data.numel() * input_data.element_size()
@@ -100,7 +100,7 @@ def main():
         comm_array[i, 1] = bandwidth
         
     plt.plot(data_sizes, bandwidths, marker='o')
-    plt.xscale('log', base=2)
+    # plt.xscale('log', base=2)
     plt.xlabel('Data Size (elements)')
     plt.ylabel('Bandwidth (GB/s)')
     plt.title('Bandwidth vs Data Size')

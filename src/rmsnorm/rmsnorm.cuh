@@ -16,20 +16,22 @@ __global__ __forceinline__ void rmsnorm_kernel(
   
   int bid = blockIdx.x;
   int tid = threadIdx.y * blockDim.x + threadIdx.x;
-  int j = tid << 3;
+  int j = tid << 4;
 
   if (j >= dim) {return;}
 
-  half2 x_val[4];
-  half2 w_val[4];
+  half2 x_val[8];
+  half2 w_val[8];
   float pow_sum = 0.0f;
 
   *(float4*)(&x_val[0]) = *(float4*)(&x[bid * dim + j]);
+  *(float4*)(&x_val[4]) = *(float4*)(&x[bid * dim + j + 8]);
   *(float4*)(&w_val[0]) = *(float4*)(&rw[j]);
+  *(float4*)(&w_val[4]) = *(float4*)(&rw[j + 8]);
 
   // RMSNorm (float)
 #pragma unroll
-  for (int i = 0; i < 4; i++){
+  for (int i = 0; i < 8; i++){
     pow_sum += __half2float(x_val[i].x) * __half2float(x_val[i].x);
     pow_sum += __half2float(x_val[i].y) * __half2float(x_val[i].y);
   }
@@ -46,17 +48,14 @@ __global__ __forceinline__ void rmsnorm_kernel(
   // normalization
   float scaling = warpLevelSums[0];
 #pragma unroll
-  for (int i = 0; i < 4; i++){
+  for (int i = 0; i < 8; i++){
     x_val[i].x = __float2half(__half2float(x_val[i].x) * scaling);
     x_val[i].y = __float2half(__half2float(x_val[i].y) * scaling);
+    x_val[i] = __hmul2(x_val[i], w_val[i]);
   }
-  x_val[0] = __hmul2(x_val[0], w_val[0]);
-  x_val[1] = __hmul2(x_val[1], w_val[1]);
-  x_val[2] = __hmul2(x_val[2], w_val[2]);
-  x_val[3] = __hmul2(x_val[3], w_val[3]);
-
   // store intermediate value
   *(float4*)(&o[bid * dim + j]) = *(float4*)(&x_val[0]);
+  *(float4*)(&o[bid * dim + j + 8]) = *(float4*)(&x_val[4]);
 }
 
 /*
@@ -69,12 +68,12 @@ __global__ __forceinline__ void reorder_rmsnorm_kernel(
   
   int bid = blockIdx.x;
   int tid = threadIdx.y * blockDim.x + threadIdx.x;
-  int j = tid << 3;
+  int j = tid << 4;
 
   if (j >= dim) {return;}
 
-  half2 x_val[4];
-  half2 w_val[4];
+  half2 x_val[8];
+  half2 w_val[8];
   float pow_sum = 0.0f;
 
   // perform a block-wise reorder here
@@ -84,11 +83,13 @@ __global__ __forceinline__ void reorder_rmsnorm_kernel(
   int new_col = new_index % rldn * BN + j % BN;
 
   *(float4*)(&x_val[0]) = *(float4*)(&x[new_row * (rldn * BN) + new_col]);
+  *(float4*)(&x_val[4]) = *(float4*)(&x[new_row * (rldn * BN) + new_col + 8]);
   *(float4*)(&w_val[0]) = *(float4*)(&rw[j]);
+  *(float4*)(&w_val[4]) = *(float4*)(&rw[j + 8]);
 
   // RMSNorm (float)
 #pragma unroll
-  for (int i = 0; i < 4; i++){
+  for (int i = 0; i < 8; i++){
     pow_sum += __half2float(x_val[i].x) * __half2float(x_val[i].x);
     pow_sum += __half2float(x_val[i].y) * __half2float(x_val[i].y);
   }
@@ -105,15 +106,12 @@ __global__ __forceinline__ void reorder_rmsnorm_kernel(
   // normalization
   float scaling = warpLevelSums[0];
 #pragma unroll
-  for (int i = 0; i < 4; i++){
+  for (int i = 0; i < 8; i++){
     x_val[i].x = __float2half(__half2float(x_val[i].x) * scaling);
     x_val[i].y = __float2half(__half2float(x_val[i].y) * scaling);
+    x_val[i] = __hmul2(x_val[i], w_val[i]);
   }
-  x_val[0] = __hmul2(x_val[0], w_val[0]);
-  x_val[1] = __hmul2(x_val[1], w_val[1]);
-  x_val[2] = __hmul2(x_val[2], w_val[2]);
-  x_val[3] = __hmul2(x_val[3], w_val[3]);
-
   // store intermediate value
   *(float4*)(&o[bid * dim + j]) = *(float4*)(&x_val[0]);
+  *(float4*)(&o[bid * dim + j + 8]) = *(float4*)(&x_val[4]);
 }

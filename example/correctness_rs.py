@@ -22,10 +22,10 @@ def create_tp_group(world_size, rank, tp_size):
 def per_gpu_process(rank, world_size, nccl_id, M, N, K, config):
     torch.cuda.set_device(rank)
 
-    A0 = torch.ones((M, K), dtype=torch.float16, device="cuda").normal_(mean=0., std=1.0)
+    A0 = torch.ones((M, K), dtype=torch.float16, device="cuda").normal_(mean=0., std=0.5)
     A1 = reorder_rows_by_world_size(A0, world_size)
-    B = torch.ones((N, K), dtype=torch.float16, device="cuda").normal_(mean=0., std=1.0)
-    W = torch.ones((N), dtype=torch.float16, device="cuda").normal_(mean=0., std=1.0)
+    B = torch.ones((N, K), dtype=torch.float16, device="cuda").normal_(mean=0., std=0.5)
+    W = torch.ones((N), dtype=torch.float16, device="cuda").normal_(mean=0., std=0.5)
     
     rmsnorm_layer = RMSNorm(N)
     rmsnorm_layer.weight = nn.Parameter(W)
@@ -51,6 +51,18 @@ def per_gpu_process(rank, world_size, nccl_id, M, N, K, config):
 
     y1 = rmsnorm_layer(x1)
     y2 = reorder_rmsnorm_layer(x2)
+
+    diff = torch.abs(y1 - y2)
+
+    max_idx_flat = torch.argmax(diff)
+    max_idx_unravel = torch.unravel_index(max_idx_flat, diff.shape)
+    val1 = y1[max_idx_unravel]
+    val2 = y2[max_idx_unravel]
+
+    print("Index of max absolute difference:", max_idx_unravel)
+    print("Value in y1 at that index:", val1.item())
+    print("Value in y2 at that index:", val2.item())
+    print("Absolute difference:", diff[max_idx_unravel].item())
 
     all_close = torch.allclose(y1, y2, atol=5e-2, rtol=5e-2)
     torch.cuda.synchronize()

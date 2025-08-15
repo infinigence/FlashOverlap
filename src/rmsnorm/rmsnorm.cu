@@ -20,7 +20,7 @@ void reorder_rmsnorm(at::Tensor X, at::Tensor RX, at::Tensor RW,
   int bs = X.size(0);
   int dim = X.size(1);
 
-  reorder_rmsnorm_kernel<<<dim3(bs), dim3(DIV_UP(dim, 8), 1)>>>(
+  reorder_rmsnorm_kernel<<<dim3(bs), dim3(DIV_UP(dim, 16), 1)>>>(
         reinterpret_cast<half *>(X.data_ptr<at::Half>()),
         reinterpret_cast<half *>(RW.data_ptr<at::Half>()),
         reinterpret_cast<half *>(RX.data_ptr<at::Half>()),
@@ -37,7 +37,7 @@ void rmsnorm(at::Tensor X, at::Tensor O, at::Tensor RW){
   int bs = X.size(0);
   int dim = X.size(1);
 
-  rmsnorm_kernel<<<dim3(bs), dim3(DIV_UP(dim, 8), 1)>>>(
+  rmsnorm_kernel<<<dim3(bs), dim3(DIV_UP(dim, 16), 1)>>>(
         reinterpret_cast<half *>(X.data_ptr<at::Half>()),
         reinterpret_cast<half *>(RW.data_ptr<at::Half>()),
         reinterpret_cast<half *>(O.data_ptr<at::Half>()),
