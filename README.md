@@ -12,9 +12,8 @@
 😊 **A Lightweight Design for Computation-Communication Overlap**
 </div>
 
-## How *FlashOverlap* Works
-![FlashOverlap](./docs/_static/image/typical_timeline.jpeg)
-The figure shows a typical timeline of computation-communication overlap in FlashOverlap. Two CUDA streams are for computation and communication, respectively. The CUTLASS kernel sends signals during GEMM computation in one stream, while a counting kernel stalls NCCL communication until receiving a preset number of signals in the other stream.
+## News
+**[2025.08.23]** *FlashOverlap* has been accepted by EuroSys'26 🎉 Tech report will be updated soon. 
 
 ## Roadmap
 - [x] demo for GEMM+AllReduce
@@ -22,8 +21,13 @@ The figure shows a typical timeline of computation-communication overlap in Flas
 - [ ] multi-node example
 - [x] demo for GEMM+ReduceScatter
 - [ ] demo for GEMM+AlltoAll
+- [ ] code branch for AE
 - [ ] more platforms (e.g., hopper GPU)
 - [ ] end2end example
+
+## How *FlashOverlap* Works
+![FlashOverlap](./docs/_static/image/typical_timeline.jpeg)
+The figure shows a typical timeline of computation-communication overlap in FlashOverlap. Two CUDA streams are for computation and communication, respectively. The CUTLASS kernel sends signals during GEMM computation in one stream, while a counting kernel stalls NCCL communication until receiving a preset number of signals in the other stream.
 
 ## Build and Install
 ### Dependency
