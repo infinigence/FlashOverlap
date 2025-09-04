@@ -1,5 +1,5 @@
 '''
-    Using multiprocessing for distributed running, 
+    Using multiprocessing for intra-node parallelism, 
     please specify the GPUs via CUDA_VISIBLE_DEVICES:
         CUDA_VISIBLE_DEVICES=0,1 python3 result.py --m 4096 --n 8192 --k 4096
 '''

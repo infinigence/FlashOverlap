@@ -63,3 +63,29 @@ def reorder_rows_by_world_size(tensor, world_size):
     reordered_tensor = tensor[sorted_indices]
 
     return reordered_tensor
+
+def generate_unbalanced_transfer_matrix(token_num, topk, world_size, BM, seed=31, max_attempts=100, imbalance_factor=0.5):
+    assert token_num % BM == 0, "token_num must be a multiple of BM"
+    G = token_num // BM
+    assert G % world_size == 0, "token_num//BM must be divisible by world_size"
+    groups_per_rank = G // world_size
+
+    for attempt in range(max_attempts):
+        current_seed = seed + attempt
+        torch.manual_seed(current_seed)
+        transfer_matrix = torch.zeros((world_size, world_size), dtype=torch.int32)
+
+        weights = torch.softmax(torch.rand(world_size) * imbalance_factor, dim=0)
+        
+        for group_id in range(G):
+            target_rank = group_id % world_size
+            expert_choices = torch.multinomial(weights, topk, replacement=True)
+            expert_counts = torch.bincount(expert_choices, minlength=world_size)
+            transfer_matrix[:, target_rank] += expert_counts * BM
+
+        row_sums = transfer_matrix.sum(dim=1)
+        if not (row_sums == 0).any():
+            return transfer_matrix
+
+    raise RuntimeError(f"Failed to generate valid transfer matrix after {max_attempts} attempts. "
+                      "Please check your parameters (world_size, topk, etc.).")

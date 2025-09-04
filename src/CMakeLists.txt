@@ -22,6 +22,10 @@ add_library(overlap_impl overlap_impl.cu)
 set_property(TARGET overlap_impl PROPERTY POSITION_INDEPENDENT_CODE ON)
 target_link_libraries (overlap_impl PUBLIC gemm overlap norm)
 
+add_library(decomposition_impl decomposition_impl.cu)
+set_property(TARGET decomposition_impl PROPERTY POSITION_INDEPENDENT_CODE ON)
+target_link_libraries (decomposition_impl PUBLIC gemm overlap norm)
+
 add_library(nccl_tool nccl_utils.cu)
 set_property(TARGET nccl_tool PROPERTY POSITION_INDEPENDENT_CODE ON)
 
@@ -29,6 +33,7 @@ add_library(st_pybinding SHARED pybind.cpp)
 target_link_libraries(
     st_pybinding
     baseline_impl
+    decomposition_impl
     overlap_impl
     nccl_tool
 )

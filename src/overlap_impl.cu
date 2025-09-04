@@ -319,3 +319,146 @@ void OverlapImpl::GemmReduceScatterOverlap(
     cudaStreamWaitEvent(this->gemm_stream, this->gemm_finished, 0);
     cudaEventDestroy(this->gemm_finished);
 }
+
+void OverlapImpl::GemmAll2AllOverlap(
+        at::Tensor A,  // M, K
+        at::Tensor B,  // N, K
+        at::Tensor C,  // M, N
+        at::Tensor D, 
+        at::Tensor MM, // TM + 1, TN
+        at::Tensor RA, // TM, TN
+        int64_t rLDN, 
+        at::Tensor cSEG_CPU, // SegSize, how many communication segments
+        at::Tensor cSEG_GPU, // SegSize, how many communication segments, on GPU
+        at::Tensor mLen_CPU, // [I, world_size, world_size]
+        int64_t Algo
+        ){
+
+    int M = A.size(0);
+    int K = A.size(1);
+    int N = B.size(0);
+
+    int TM = RA.size(0);
+    int TN = RA.size(1);
+    int TileNum = TM * TN;
+
+    int BM = M / TM;
+    int BN = N / TN;
+
+    int SegSize = cSEG_GPU.size(0);
+
+    half* a_ptr = reinterpret_cast<half *>(A.data_ptr<at::Half>());
+    half* b_ptr = reinterpret_cast<half *>(B.data_ptr<at::Half>());
+    half* c_ptr = reinterpret_cast<half *>(C.data_ptr<at::Half>());
+    half* d_ptr = reinterpret_cast<half *>(D.data_ptr<at::Half>());
+    int* mm_ptr = MM.data_ptr<int>();
+    int* ra_ptr = RA.data_ptr<int>();
+
+    int* cseg_cpu_ptr = cSEG_CPU.data_ptr<int>();
+    int* cseg_gpu_ptr = cSEG_GPU.data_ptr<int>();
+
+    // First SEND
+    int src_acc_addr = 0;
+    // Then RECV
+    int dst_acc_addr = 0;
+    signal_func_table[Algo](
+        M, N, K, rLDN, cseg_gpu_ptr, a_ptr, b_ptr, c_ptr, mm_ptr, ra_ptr, false, this->gemm_stream
+    );
+    for (int iter = 0; iter < SegSize; iter++){
+        int* mlen_cpu_ptr = mLen_CPU.data_ptr<int>() + iter * this->my_size * this->my_size;
+        int this_seg = cseg_cpu_ptr[iter];
+        // The signal is reset by the wait kernel
+        kernel_wait_flag<<<1, 1, 0, this->comm_stream>>> (this_seg, (mm_ptr + iter));
+
+        // Communicate the data
+        NCCL_CHECK(ncclGroupStart());
+        for (int i = 0; i < this->my_size; i++){
+            if (i == this->my_rank){continue;}
+            size_t sendcount = M * N / TileNum * mlen_cpu_ptr[this->my_rank * this->my_size + i];
+            NCCL_CHECK(ncclSend((void *)(c_ptr + src_acc_addr), sendcount, ncclFloat16, i, this->comm, this->comm_stream));
+            src_acc_addr += sendcount;
+
+            size_t recvcount = M * N / TileNum * mlen_cpu_ptr[i * this->my_size + this->my_rank];
+            NCCL_CHECK(ncclRecv((void *)(d_ptr + dst_acc_addr), recvcount, ncclFloat16, i, this->comm, this->comm_stream));
+            dst_acc_addr += recvcount;
+        }
+        NCCL_CHECK(ncclGroupEnd());
+    }
+
+    cudaEventCreateWithFlags(&this->gemm_finished, cudaEventDisableTiming);
+    cudaEventRecord(this->gemm_finished, this->comm_stream);
+    cudaStreamWaitEvent(this->gemm_stream, this->gemm_finished, 0);
+    cudaEventDestroy(this->gemm_finished);
+}
+
+void OverlapImpl::GemmReorderTile(
+        at::Tensor A,  // M, K
+        at::Tensor B,  // N, K
+        at::Tensor C,  // M, N
+        at::Tensor MM, // TM + 1, TN
+        at::Tensor RA, // TM, TN
+        int64_t rLDN, 
+        at::Tensor cSEG_CPU, // SegSize, how many communication segments
+        at::Tensor cSEG_GPU, // SegSize, how many communication segments, on GPU
+        int64_t Algo
+        ){
+
+    int M = A.size(0);
+    int K = A.size(1);
+    int N = B.size(0);
+
+    int TM = RA.size(0);
+    int TN = RA.size(1);
+    int TileNum = TM * TN;
+
+    int SegSize = cSEG_GPU.size(0);
+
+    half* a_ptr = reinterpret_cast<half *>(A.data_ptr<at::Half>());
+    half* b_ptr = reinterpret_cast<half *>(B.data_ptr<at::Half>());
+    half* c_ptr = reinterpret_cast<half *>(C.data_ptr<at::Half>());
+    int* mm_ptr = MM.data_ptr<int>();
+    int* ra_ptr = RA.data_ptr<int>();
+
+    int* cseg_gpu_ptr = cSEG_GPU.data_ptr<int>();
+
+    signal_func_table[Algo](
+        M, N, K, rLDN, cseg_gpu_ptr, a_ptr, b_ptr, c_ptr, mm_ptr, ra_ptr, false, this->gemm_stream
+    );
+}
+
+void OverlapImpl::GemmReorderToken(
+        at::Tensor A,  // M, K
+        at::Tensor B,  // N, K
+        at::Tensor C,  // M, N
+        at::Tensor MM, // TM + 1, TN
+        at::Tensor RA, // TM, TN
+        at::Tensor RE, // M
+        int64_t rLDN, 
+        at::Tensor cSEG_CPU, // SegSize, how many communication segments
+        at::Tensor cSEG_GPU, // SegSize, how many communication segments, on GPU
+        int64_t Algo
+        ){
+
+    int M = A.size(0);
+    int K = A.size(1);
+    int N = B.size(0);
+
+    int TM = RA.size(0);
+    int TN = RA.size(1);
+    int TileNum = TM * TN;
+
+    int SegSize = cSEG_GPU.size(0);
+
+    half* a_ptr = reinterpret_cast<half *>(A.data_ptr<at::Half>());
+    half* b_ptr = reinterpret_cast<half *>(B.data_ptr<at::Half>());
+    half* c_ptr = reinterpret_cast<half *>(C.data_ptr<at::Half>());
+    int* mm_ptr = MM.data_ptr<int>();
+    int* ra_ptr = RA.data_ptr<int>();
+    int* re_ptr = RE.data_ptr<int>();
+
+    int* cseg_gpu_ptr = cSEG_GPU.data_ptr<int>();
+
+    scatter_func_table[Algo](
+        M, N, K, rLDN, cseg_gpu_ptr, a_ptr, b_ptr, c_ptr, mm_ptr, ra_ptr, re_ptr, false, this->gemm_stream
+    );
+}

@@ -59,10 +59,10 @@ def per_gpu_process(rank, world_size, nccl_id, M, N, K, config):
     val1 = y1[max_idx_unravel]
     val2 = y2[max_idx_unravel]
 
-    print("Index of max absolute difference:", max_idx_unravel)
-    print("Value in y1 at that index:", val1.item())
-    print("Value in y2 at that index:", val2.item())
-    print("Absolute difference:", diff[max_idx_unravel].item())
+    # print("Index of max absolute difference:", max_idx_unravel)
+    # print("Value in y1 at that index:", val1.item())
+    # print("Value in y2 at that index:", val2.item())
+    # print("Absolute difference:", diff[max_idx_unravel].item())
 
     all_close = torch.allclose(y1, y2, atol=5e-2, rtol=5e-2)
     torch.cuda.synchronize()
@@ -75,9 +75,10 @@ def main():
     parser.add_argument('--m', type=int, default=4096)
     parser.add_argument('--k', type=int, default=8192)
     parser.add_argument('--n', type=int, default=4096)
+    parser.add_argument('--gpu', type=int, default=2)
     args = parser.parse_args()
 
-    world_size = torch.cuda.device_count()
+    world_size = args.gpu
     if world_size < 2:
         raise RuntimeError("At least 2 GPUs are required for this program.")
 
@@ -86,12 +87,12 @@ def main():
     nccl_id = torch.ops.flashoverlap_op.generate_nccl_id()
     torch.cuda.synchronize()
 
-    print(f"NCCL ID generated: {nccl_id[0]}")
+    # print(f"NCCL ID generated: {nccl_id[0]}")
 
     device = torch.cuda.current_device()
     props = torch.cuda.get_device_properties(device)
     gpu_name = props.name[7:11].lower()
-    config_file = f'../configs/m{args.m}n{args.n}k{args.k}_{gpu_name}.json'
+    config_file = f'../configs/m{args.m}n{args.n}k{args.k}_{gpu_name}_reduce_scatter_{world_size}.json'
 
     with open(config_file, 'r') as file:
         config = json.load(file)

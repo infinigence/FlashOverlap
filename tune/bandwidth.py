@@ -45,8 +45,8 @@ def perf_comm_process(rank, world_size, nccl_id, M, N, comm_op, result_dict):
 
     result_dict[rank] = torch.mean(dur).item()
 
-def perf_comm(M: int, N: int, comm_op: str):
-    world_size = torch.cuda.device_count()
+def perf_comm(M: int, N: int, comm_op: str, world_size: int):
+    
     if world_size < 2:
         raise RuntimeError("At least 2 GPUs are required!")
     
@@ -68,11 +68,18 @@ def perf_comm(M: int, N: int, comm_op: str):
 
 # Define the main function
 def main():
-    world_size = torch.cuda.device_count()
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--comm_op', type=str, default="all_reduce")
+    parser.add_argument('--world_size', type=int, default=2)
     args = parser.parse_args()
+
+    import os
+    if os.path.exists("../configs/bandwidth_" + args.comm_op + "_gpu" + str(args.world_size) + ".pt"):
+        print("Bandwidth file exists!")
+        return
+
+    world_size = args.world_size
 
     data_sizes = [(int(2**(20 + 0.25*i)) // 1024 * 1024) for i in range(36)] 
     bandwidths = []
@@ -82,7 +89,7 @@ def main():
         # 创建输入张量（torch.float16）
         input_data = torch.randn(size, dtype=torch.float16, device='cuda')
 
-        avg_time = perf_comm(1024, size // 1024, args.comm_op)
+        avg_time = perf_comm(1024, size // 1024, args.comm_op, world_size)
         
         # 计算带宽（单位：GB/s）
         data_size_bytes = input_data.numel() * input_data.element_size()
@@ -108,7 +115,7 @@ def main():
     plt.savefig('bandwidth.png', dpi=300, bbox_inches='tight')
     plt.show()
 
-    torch.save(comm_array, "../configs/bandwidth_" + args.comm_op + "_tp" + str(world_size) + ".pt")
+    torch.save(comm_array, "../configs/bandwidth_" + args.comm_op + "_gpu" + str(world_size) + ".pt")
 
 if __name__ == "__main__":
     main()

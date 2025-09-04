@@ -1,7 +1,5 @@
 <div align="center">
 
-<img src="./docs/_static/image/FlashOverlap_LOGO.png" width="75" height="50">
-
 # ***FlashOverlap*** 
 
 <a href="https://arxiv.org/abs/2504.19519">
@@ -11,19 +9,7 @@
 
 😊 **A Lightweight Design for Computation-Communication Overlap**
 </div>
-
-## News
-**[2025.08.23]** *FlashOverlap* has been accepted by EuroSys'26 🎉 Tech report will be updated soon. 
-
-## Roadmap
-- [x] demo for GEMM+AllReduce
-- [x] predictive search for wave grouping
-- [ ] multi-node example
-- [x] demo for GEMM+ReduceScatter
-- [ ] demo for GEMM+AlltoAll
-- [ ] code branch for AE
-- [ ] more platforms (e.g., hopper GPU)
-- [ ] end2end example
+This is the artifact of paper "Efficient and Adaptable Overlapping for Computation and Communication via Signaling and Reordering" accepted by EuroSys'26.
 
 ## How *FlashOverlap* Works
 ![FlashOverlap](./docs/_static/image/typical_timeline.jpeg)
@@ -35,13 +21,13 @@ The main dependency is [NCCL](https://developer.nvidia.com/nccl/nccl-download), 
 
 Another dependency is [CUTLASS](https://github.com/NVIDIA/cutlass.git), which is included as submodule. Note that the code has been tested with `v3.6.0` and `v3.9.0`, but fails with `v3.4.0`. We assume `CUTLASS>=v3.6.0` works fine.  
 
-The code only supports `sm_80, sm_86, sm_89` now, and the evaluation enviroments include NVIDIA RTX 3090, RTX 4090, A800, and A100 GPUs. The versions of CUDA Toolkit include `CUDA 12.1, 12.2`.
+The code only supports `sm_80, sm_86, sm_89` now, and the evaluation enviroments include NVIDIA RTX 3090, RTX 4090, A800, and A100 GPUs. This artifact evaluation necessitates a server equipped with eight GPUs. Please contact the authors for the lack of such enviroments. The versions of CUDA Toolkit include `CUDA 12.1, 12.2`.
 
 ### Install
 First, pull the repo:
 
 ```shell
-    $ git clone https://github.com/infinigence/FlashOverlap.git
+    $ git clone https://github.com/infinigence/FlashOverlap.git -b ae
     $ cd FlashOverlap
     $ git submodule update --init --recursive
 ```
@@ -69,106 +55,54 @@ Then the operators are registered as torch.class, and in Python code, the `.so` 
     torch.ops.load_library("../build/lib/libst_pybinding.so")
 ```
 
-## Quick Start
-⚠️ ***Notice:*** the boundary handling is not implemented, thus the repo only supports regular GEMM shapes now (`M, N % 128 == 0`). 
-### File Structure
-```plaintext
-.
-├── cmake
-│   └── Modules
-│       └── FindNCCL.cmake
-├── configs                   // To store GEMM and overlapping configs
-├── example
-│   ├── correctness_ar.py        // Check correctness of GEMM+AllReduce+RMSNorm
-│   ├── correctness_rs.py        // Check correctness of GEMM+ReduceScatter+RMSNorm
-├── src
-│   ├── 3rdparty
-│   ├── gemm                  // CUTLASS GEMM Wrappers
-│   │   ├── gemm.cu
-│   │   └── gemm.h
-│   ├── inc                   // Instantiate templated GEMMs
-│   ├── overlap               // Source files for signal+reorder
-│   ├── rmsnorm               // Source files for reorder+RMSNorm
-│   ├── tiling                // Tiling definition  
-│   ├── baseline_impl.cu      // Baseline implementation class
-│   ├── baseline_impl.h
-│   ├── CMakeLists.txt
-│   ├── nccl_utils.cu         // NCCL id generation function
-│   ├── nccl_utils.h
-│   ├── overlap_impl.cu       // Overlap implementation class
-│   ├── overlap_impl.h
-│   ├── pybind.cpp
-│   └── wait.cuh              // Signal kernel
-├── test
-│   └── test.py
-├── tool
-│   └── generate_instances.py // Generate templated GEMMs
-├── tune
-│   ├── bandwidth.py          // Bandwidth test for predictive search
-│   ├── gen_config.py         // Generate GEMM configs based on CUTLASS profiler
-│   ├── profile_config.py     // Customized profiler
-│   └── search.py             // Exhausitive search and predictive search
-└── CMakeLists.txt
-```
-
-### Generate GEMM configuration
-Currently the repo supports two ways to generate the proper configs for GEMMs for better performance. Only one GPU is needed for this operation. 
-
-0. Make sure the `./configs` dir is created. 
+## Setup
+Before evaluation, we need to first generate the GEMM configurations, and then tune the overlap performance. We have prepared a script that automates the entire setup procedure.
+ 
 ```shell
     $ cd tune
+    $ python3 preparation.py
 ```
 
-1. Using the [CUTLASS Profiler](https://github.com/NVIDIA/cutlass/blob/main/media/docs/cpp/profiler.md). Follow the README and write the profiling results in `$CSV_PATH/*.csv`. Then, generate the `.json` file in configs. 
+## Experiment 1
+To verify the output correctness, run the corresponding script and the terminal will outputs `all close`.
 ```shell
-    $ python gen_config.py --m $M --n $N --k $K --path $CSV_PATH
+    $ cd ../evaluation
+    $ python3 e1_correctness.py
 ```
 
-2. Using the customized profiler for a specific shape. The profiling process finishes within minutes. (This method has not been evaluated on RTX 4090 and RTX 3090 yet, will be updated soon.)
+To show the overlap speedup, run the corresponding script and the terminal will outputs a table showing speedups across different primitives and GPU numbers.
 ```shell
-    $ python profile_config.py --m $M --n $N --k $K
+    $ cd ../evaluation
+    $ python3 e1_speedup.py
 ```
 
-### Tune
-Tune the wave group size. Note multiple GPUs are needed in this program and the environment variable `CUDA_VISIBLE_DEVICES` must be set, as we use the `spawn` method (torch.multiprocessing.spawn) and the rank and world size are explicitly determined. 
-
-1. The repo provides both the exhaustive and predictive search methods, and the latter is recommended when `MxN>4096x4096`. If the predictive method is chosen, please generate the bandwidth curve first. Given GPU and communication primitive, the bandwidth curve needs only one generation. 
+If the GPUs enable peer-to-peer access, the baselines include [Flux](https://github.com/bytedance/flux) and [AsyncTP](https://discuss.pytorch.org/t/distributed-w-torchtitan-introducing-async-tensor-parallelism-in-pytorch/209487) can be run. To compare the performance of GEMM + ReduceScatter, follow the instructions in the offical repository of [Flux](https://github.com/bytedance/flux) and run the two baselines separately. After that, run the provided script to show the comparison results. 
 ```shell
-    $ CUDA_VISIBLE_DEVICES=0,1 python bandwidth.py --comm_op all_reduce
+    $ cd baseline
+    $ python3 async_tp_test.py
+    $ python3 flux_test.py
+    $ python3 e1_rs_compare.py
 ```
-2. Two search methods share the same script, `--predictive_search` should be specified if used.
+
+## Experiment 2
+To evaluate the search accuracy of the proposed predictive search method, run the script and the terminal will output (1) the cumulative distribution curve of the average prediction error and (2) the performance comparison between the predictive searched solution and the exhaustive searched solution.
 ```shell
-    $ CUDA_VISIBLE_DEVICES=0,1 python search.py --m $M --n $N --k $K --comm_op {all_reduce, reduce_scatter} --predictive_search True
+    $ cd ..
+    $ python3 e2_predictive_search.py
 ```
-3. The generated solution is written into the corresponding `.json` file. 
 
-### Speed Test
-Open the test dir and run the script.
+## Experiment 3
+To quantify the overhead in the RMSNorm kernel, run the following script and the terminal will output the overhead ratio under different patterns.
 ```shell
-    $ cd ./test
-    $ CUDA_VISIBLE_DEVICES=0,1 python test.py --m $M --n $N --k $K --comm_op {all_reduce, reduce_scatter}
+    $ cd ..
+    $ python3 e3_rmsnorm_overhead.py
 ```
 
-### Correctness Test
-1. Open the example dir.
-```
-    $ cd ./example
-```
-
-2. Evaluate the correctness of GEMM+AllReduce+RMSNorm. The RMSNorm must be included as the tile order is corrected in the kernel. 
+To quantify the overhead in the GEMM kernel, run the following script and the terminal will output the overhead ratio under different patterns.
 ```shell
-    $ CUDA_VISIBLE_DEVICES=0,1 python correctness_{ar, rs}.py --m $M --n $N --k $K
+    $ cd ..
+    $ python3 e3_gemm_overhead.py
 ```
-3. We define the `ReorderRMSNorm` class in `RMSNorm.py` and the `OverlapRowParallelLayer` class in `RowParallelLayer.py`, which can replace the `RMSNorm` class and `RowParallelLayer` class, respectively. It's a simple example of usage in end-to-end inference or training. 
 
-## Citation
-```
-    @misc{hong2025flashoverlap,
-      title={FlashOverlap: A Lightweight Design for Efficiently Overlapping Communication and Computation},
-      author={Ke Hong, Xiuhong Li, Minxu Liu, Qiuli Mao, Tianqi Wu, Zixiao Huang, Lufang Chen, Zhong Wang, Yichong Zhang, Zhenhua Zhu, Guohao Dai, Yu Wang},
-      year={2025},
-      eprint={2504.19519},
-      archivePrefix={arXiv},
-      primaryClass={cs.DC}
-    }
-```
+## Contact
+Please contact `hk24@mails.tsinghua.edu.cn` for further issues. 

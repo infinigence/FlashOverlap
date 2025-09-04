@@ -5,45 +5,28 @@ import json
 from pathlib import Path
 import torch.multiprocessing as mp
 import numpy as np
+import glob
+import os
+import re
+from tqdm import tqdm
 
 torch.ops.load_library("../build/lib/libst_pybinding.so")
 
 def div_up(x: int, y: int):
     return (x + y - 1) // y
 
-def load_json(M: int, N: int, K: int):
+def load_json(M: int, N: int, K: int, comm_op: str, world_size: int):
     device = torch.cuda.current_device()
     props = torch.cuda.get_device_properties(device)
     gpu_name = props.name[7:11].lower()
-    file_path = f'../configs/m{M}n{N}k{K}_{gpu_name}.json'
+    file_path = f'../configs/m{M}n{N}k{K}_{gpu_name}_{comm_op}_{world_size}.json'
     
     assert Path(file_path).exists(), "Please run preprocess.py first!"
     
     with open(file_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
     
-    return data["BM"], data["BN"], data["dur"], data["Algo"]
-
-def save_solution(M: int, N: int, K: int, BM: int, BN: int, 
-        gemm_dur: float, Algo: int, hint: list, cSeg: list, comm_op: str, world_size: int):
-    device = torch.cuda.current_device()
-    props = torch.cuda.get_device_properties(device)
-    gpu_name = props.name[7:11].lower()
-    file_path = f'../configs/m{M}n{N}k{K}_{gpu_name}.json'
-    save_file_path = f'../configs/m{M}n{N}k{K}_{gpu_name}_{comm_op}_{world_size}.json'
-
-    with open(file_path, 'r', encoding='utf-8') as f:
-        data = json.load(f)
-    
-    data["hint"] = hint
-    data["cSeg"] = cSeg
-    data["rLDN"] = 1
-    data["BM"] = BM
-    data["BN"] = BN
-    data["dur"] = gemm_dur
-    data["Algo"] = Algo
-    with open(save_file_path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=4)
+    return data["BM"], data["BN"], data["dur"], data["Algo"], data["hint"]
 
 def generate_row_remap_array(
     M, N, BM, BN, S_list, world_size, device="cuda"
@@ -72,104 +55,7 @@ def generate_row_remap_array(
     
     return remap
 
-def compute_hint_process(rank, world_size, nccl_id,
-    M: int, N: int, K: int,
-    BM: int, BN: int, Algo: list, wSize: int, comm_op: str, 
-    result_dict):
-
-    TileNum = div_up(M, BM) * div_up(N, BN)
-    WaveNum = div_up(TileNum, wSize) 
-
-    cSeg = []
-    for i in range(WaveNum):
-        this_seg = min(wSize, TileNum - i * wSize)
-        cSeg = cSeg + [this_seg]
-
-    cSeg_CPU = torch.tensor(cSeg, dtype=torch.int32) 
-    cSeg_GPU = cSeg_CPU.cuda(rank)
-
-    torch.cuda.set_device(rank)
-
-    gemm_class = torch.classes.flashoverlap_class.OverlapImpl()
-
-    gemm_class.nccl_init(rank, world_size, nccl_id)
-    gemm_class.cutlass_init()
-    gemm_class.overlap_init()
-
-    A = torch.empty((M, K), dtype=torch.float16, device="cuda").normal_(mean=0., std=0.5)
-    B = torch.empty((N, K), dtype=torch.float16, device="cuda").normal_(mean=0., std=0.5)
-    C = torch.empty((M, N), dtype=torch.float16, device="cuda")
-
-    MonitoredMatrix = torch.zeros(((M+BM-1)//BM + 1, (N+BN-1)//BN), dtype=torch.int, device="cuda") # TODO: We should put it in class
-    ReorderedArray = torch.arange(0, TileNum, dtype=torch.int, device="cuda").reshape(((M+BM-1)//BM, (N+BN-1)//BN))
-
-    if comm_op == "reduce_scatter":
-        D = torch.empty((M // world_size, N), dtype=torch.float16, device="cuda")
-        RowArray = generate_row_remap_array(M, N, BM, BN, cSeg, world_size)
-
-    _warm_up = 100
-    _sample = 10
-
-    if comm_op == "all_reduce":
-        for _ in range(_warm_up):
-            gemm_class.gemm_allreduce_overlap(A, B, C, MonitoredMatrix, ReorderedArray, 1, cSeg_CPU, cSeg_GPU, Algo, True)
-        
-        samples = torch.empty((_sample, TileNum), dtype=torch.int, device="cuda")
-        for i in range(_sample):
-            MonitoredMatrix[0] = 0
-            gemm_class.gemm_allreduce_overlap(A, B, C, MonitoredMatrix, ReorderedArray, 1, cSeg_CPU, cSeg_GPU, Algo, True)
-            samples[i, :] = MonitoredMatrix[1:, :].view(-1)
-    
-    elif comm_op == "reduce_scatter":
-        for _ in range(_warm_up):
-            gemm_class.gemm_reducescatter_overlap(A, B, C, D, MonitoredMatrix, ReorderedArray, RowArray, 1, cSeg_CPU, cSeg_GPU, Algo, True)
-        
-        samples = torch.empty((_sample, TileNum), dtype=torch.int, device="cuda")
-        for i in range(_sample):
-            MonitoredMatrix[0] = 0
-            gemm_class.gemm_reducescatter_overlap(A, B, C, D, MonitoredMatrix, ReorderedArray, RowArray, 1, cSeg_CPU, cSeg_GPU, Algo, True)
-            samples[i, :] = MonitoredMatrix[1:, :].view(-1)
-
-    else:
-        assert comm_op in ["all_reduce", "reduce_scatter"], \
-            f"comm_op must be 'all_reduce' or 'reduce_scatter', but got '{comm_op}'"
-
-    hint = []
-    is_consistency = True
-    for w in range(WaveNum):
-        index = torch.where(((samples >= w * wSize) * (samples < (w + 1) * wSize)).sum(dim=0) == 10)
-
-        if w < WaveNum - 1:
-            if index[0].shape[0] < wSize:
-                is_consistency = False
-                break
-
-        hint = hint + index[0].tolist()
-        
-    result_dict[rank] = (is_consistency, hint)
-
-def compute_hint(M: int, N: int, K: int,
-    BM: int, BN: int, Algo: list, wSize: int, comm_op: str, world_size: int):
-    
-    if world_size < 2:
-        raise RuntimeError("At least 2 GPUs are required for this program.")
-
-    nccl_id = torch.ops.flashoverlap_op.generate_nccl_id()
-    torch.cuda.synchronize()
-
-    manager = mp.Manager()
-    result_dict = manager.dict()
-
-    mp.spawn(
-            compute_hint_process,
-            args=(world_size, nccl_id, M, N, K, BM, BN, Algo, wSize, comm_op, result_dict),
-            nprocs=world_size
-        )
-
-    return result_dict[0]
-
 def interpolate_latency(samples, x, comm_op, world_size):
-
     if not isinstance(samples, torch.Tensor):
         samples = torch.tensor(samples, dtype=torch.float32)
     if not isinstance(x, torch.Tensor):
@@ -222,12 +108,11 @@ def predict_lat(M: int, N: int, gemm_dur: float,
 
 def reorder_indices(S, hint):
     original = list(range(S))
-    
     new_order = [-1] * S
-    
+
     for i, element in enumerate(hint):
         new_order[element] = i
-    
+
     remaining_elements = [x for x in original if x not in hint]
     for i, element in enumerate(remaining_elements, start=len(hint)):
         new_order[element] = i
@@ -332,7 +217,6 @@ def perf_running_process(rank, world_size, nccl_id,
 def perf_running(M: int, N: int, K: int, 
     BM: int, BN: int, Algo: int, 
     cSeg: list, hint: list, comm_op: str, world_size: int):
-
     if world_size < 2:
         raise RuntimeError("At least 2 GPUs are required for this program.")
 
@@ -365,97 +249,30 @@ def integer_partitions(n):
     helper(n, [])
     return result
 
-def exhaustive_search(M: int, N: int, K: int, comm_op: str, world_size: int):
-    # load the .json file
-    BM_list, BN_list, gemm_dur_list, Algo_list = load_json(M, N, K)
-
-    # get the SM count
-    device = torch.cuda.current_device()
-    props = torch.cuda.get_device_properties(device)
-    sm_count = props.multi_processor_count
-
-    hint = None
-    for t in range(5):
-        BM = BM_list[t]
-        BN = BN_list[t]
-        gemm_dur = gemm_dur_list[t]
-        Algo = Algo_list[t]
-
-        tile_num = div_up(M, BM) * div_up(N, BN)
-        wave_num = div_up(tile_num, (sm_count - 2))
-
-        #compute hint
-        result = compute_hint(M, N, K, BM, BN, Algo, (sm_count - 2), comm_op, world_size)
-
-        if result[0] == True:
-            hint = result[1]
-            break
-
-    assert hint != None, "Tuning fails! Try to increase min_group_size manully."
-    print("Start exhaustive searching.")
-
-    min_dur = 1e5
-
-    group_size_list = integer_partitions(wave_num)
-    group_choice = len(group_size_list)
-    for i in range(group_choice):
-        gp = group_size_list[i]
-        iter_num = len(gp)
-        acc = 0
-        for j in range(iter_num):
-            if j < iter_num - 1:
-                gp[j] = gp[j] * (sm_count - 2)
-                acc += gp[j]
-            else:
-                gp[j] = min(gp[j] * (sm_count - 2), tile_num - acc)
-        dur = perf_running(M, N, K, BM, BN, Algo, gp, hint, comm_op, world_size)
-        print(gp, "%.4f" % (dur))
-
-        if dur < min_dur:
-            min_dur = dur
-            cSeg = gp
-        
-    print("Best solution: ", cSeg)
-    save_solution(M, N, K, BM, BN, gemm_dur, Algo, hint, cSeg, comm_op, world_size)
-    print("Solution saved.")
-
-
 def fast_search(M: int, N: int, K: int, comm_array: torch.Tensor, comm_op: str, world_size: int):
     # load the .json file
-    BM_list, BN_list, gemm_dur_list, Algo_list = load_json(M, N, K)
+    BM, BN, gemm_dur, Algo, hint = load_json(M, N, K, comm_op, world_size)
 
     # get the SM count
     device = torch.cuda.current_device()
     props = torch.cuda.get_device_properties(device)
     sm_count = props.multi_processor_count
 
-    hint = None
-    for t in range(10):
-        BM = BM_list[t]
-        BN = BN_list[t]
-        gemm_dur = gemm_dur_list[t]
-        Algo = Algo_list[t]
+    tile_num = div_up(M, BM) * div_up(N, BN)
+    wave_num = div_up(tile_num, (sm_count - 2))
 
-        tile_num = div_up(M, BM) * div_up(N, BN)
-        wave_num = div_up(tile_num, (sm_count - 2))
-
-        min_group_size = div_up(wave_num, 10)
-
-        #compute hint
-        result = compute_hint(M, N, K, BM, BN, Algo, min_group_size * (sm_count - 2), comm_op, world_size)
-
-        if result[0] == True:
-            hint = result[1]
-            break
+    min_group_size = div_up(wave_num, 10)
 
     assert hint != None, "Tuning fails! Try to increase min_group_size manully."
     print("Start predictive searching.")
     
-    min_dur = 1e5
     normalized_wave_num = div_up(wave_num, min_group_size)
     group_size_list = integer_partitions(normalized_wave_num)
     
+    pred_error_list = []
     group_choice = len(group_size_list)
+    est_dur_list = []
+    act_dur_list = []
     for i in range(group_choice):
         gp = group_size_list[i]
         iter_num = len(gp)
@@ -470,39 +287,62 @@ def fast_search(M: int, N: int, K: int, comm_array: torch.Tensor, comm_op: str, 
             else:
                 gp[j] = min(gp[j] * (sm_count - 2) * min_group_size, tile_num - acc)
         est_dur = predict_lat(M, N, gemm_dur, comm_array, gp, tile_num, comm_op, world_size)
-        
-        if est_dur < min_dur:
-            min_dur = est_dur
-            cSeg = gp
-    print("Search process finished.")
+        act_dur = perf_running(M, N, K, BM, BN, Algo, gp, hint, comm_op, world_size)
+        print(f"Group size: {gp}, Estimated duration: {est_dur:.2f} ms, Actual duration: {act_dur:.2f} ms")
 
-    searched_lat = perf_running(M, N, K, BM, BN, Algo, cSeg, hint, comm_op, world_size)
-    print("Searched latency: %.4f" % searched_lat)
-    print("Best solution: ", cSeg)
-    save_solution(M, N, K, BM, BN, gemm_dur, Algo, hint, cSeg, comm_op, world_size)
-    print("Solution saved.")
+        pred_error = abs(est_dur - act_dur) / act_dur * 100
+        pred_error_list.append(pred_error)
 
+        est_dur_list.append(est_dur)
+        act_dur_list.append(act_dur)
+    
+    min_est_index = est_dur_list.index(min(est_dur_list))
+    corresponding_act = act_dur_list[min_est_index]
+    actual_min_act = min(act_dur_list)
 
-# Define the main function
+    relative_performance = actual_min_act / corresponding_act * 100
+
+    return pred_error_list, relative_performance
+
 def main():
-    # pass the problem size M, N, K via parser
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--m', type=int, default=4096)
-    parser.add_argument('--k', type=int, default=8192)
-    parser.add_argument('--n', type=int, default=8192)
-    parser.add_argument('--comm_op', type=str, default='all_reduce')
-    parser.add_argument('--world_size', type=int, default=2)
-    parser.add_argument('--predictive_search', type=bool, default=False)
-    args = parser.parse_args()
+    device = torch.cuda.current_device()
+    props = torch.cuda.get_device_properties(device)
+    gpu_name = props.name[7:11].lower()
+    
+    config_files = glob.glob(f'../configs/m*n*k*_{gpu_name}_*.json')
 
-    world_size = args.world_size
-
-    if args.predictive_search or args.m * args.n > 16777216:
-        comm_array = torch.load(f"../configs/bandwidth_{args.comm_op}_gpu{world_size}.pt")
-        print("Bandwidth curve captured.")
-        fast_search(args.m, args.n, args.k, comm_array, args.comm_op, world_size)
+    import random
+    if len(config_files) > 10:
+        selected_files = random.sample(config_files, 10)
     else:
-        exhaustive_search(args.m, args.n, args.k, args.comm_op, world_size)
+        selected_files = config_files
+    
+    for i, config_file in enumerate(tqdm(selected_files, desc="Processing config files")):
+        try:
+            filename = os.path.basename(config_file)
+            pattern = r'm(\d+)n(\d+)k(\d+)_([a-z0-9]+)_([a-z_]+)_(\d+)\.json'
+            match = re.search(pattern, filename)
+            if match:
+                M = int(match.group(1))
+                N = int(match.group(2))
+                K = int(match.group(3))
+                comm_op = match.group(5)
+                file_world_size = int(match.group(6))
+                
+                tqdm.write(f"Testing M={M}, N={N}, K={K}, comm_op={comm_op}, world_size={file_world_size}")
+                
+                comm_array = torch.load(f"../configs/bandwidth_{comm_op}_gpu{file_world_size}.pt")
+                tqdm.write("Bandwidth curve captured.")
+                
+                error_list, rel_perf = fast_search(M, N, K, comm_array, comm_op, file_world_size)
+                tqdm.write(f"Results for {filename}: {error_list} {rel_perf:.2f}%")
+                
+            else:
+                tqdm.write(f"Can't read {filename} properly.")
+                
+        except Exception as e:
+            tqdm.write(f"Error processing {config_file}: {e}")
+            continue
 
 if __name__ == "__main__":
     main()

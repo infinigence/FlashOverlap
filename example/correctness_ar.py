@@ -61,9 +61,10 @@ def main():
     parser.add_argument('--m', type=int, default=4096)
     parser.add_argument('--k', type=int, default=8192)
     parser.add_argument('--n', type=int, default=4096)
+    parser.add_argument('--gpu', type=int, default=2)
     args = parser.parse_args()
 
-    world_size = torch.cuda.device_count()
+    world_size = args.gpu
     if world_size < 2:
         raise RuntimeError("At least 2 GPUs are required for this program.")
 
@@ -72,12 +73,12 @@ def main():
     nccl_id = torch.ops.flashoverlap_op.generate_nccl_id()
     torch.cuda.synchronize()
 
-    print(f"NCCL ID generated: {nccl_id[0]}")
+    # print(f"NCCL ID generated: {nccl_id[0]}")
 
     device = torch.cuda.current_device()
     props = torch.cuda.get_device_properties(device)
     gpu_name = props.name[7:11].lower()
-    config_file = f'../configs/m{args.m}n{args.n}k{args.k}_{gpu_name}.json'
+    config_file = f'../configs/m{args.m}n{args.n}k{args.k}_{gpu_name}_all_reduce_{world_size}.json'
 
     with open(config_file, 'r') as file:
         config = json.load(file)
