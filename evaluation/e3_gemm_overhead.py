@@ -13,6 +13,9 @@ torch.ops.load_library("../build/lib/libst_pybinding.so")
 WARM_UP = 100
 REP = 1000
 
+def read_config(data):
+    return data if isinstance(data, int) else data[0]
+
 def generate_random_block_reorder(M, N, BM, BN, device='cuda'):
     num_blocks_m = (M + BM - 1) // BM
     num_blocks_n = (N + BN - 1) // BN
@@ -21,7 +24,7 @@ def generate_random_block_reorder(M, N, BM, BN, device='cuda'):
     return reorder_indices
 
 def perf_gemm(M, N, K, config):
-    Algo = config["Algo"][0]
+    Algo = read_config(config["Algo"])
     gemm_class = torch.classes.flashoverlap_class.OverlapImpl()
     gemm_class.cutlass_init()
     gemm_class.overlap_init()
@@ -46,8 +49,8 @@ def perf_gemm_reorder_tile(M, N, K, config):
     props = torch.cuda.get_device_properties(device)
     sm_count = props.multi_processor_count
     wSize = sm_count - 2
-    BM = config["BM"][0]
-    BN = config["BN"][0]
+    BM = read_config(config["BM"])
+    BN = read_config(config["BN"])
     TileNum = (M + BM - 1) // BM * (N + BN - 1) // BN
     WaveNum = (TileNum + wSize - 1) // wSize
     rLDN = 1
@@ -57,7 +60,7 @@ def perf_gemm_reorder_tile(M, N, K, config):
         cSeg.append(this_seg)
     cSeg_CPU = torch.tensor(cSeg, dtype=torch.int32)
     cSeg_GPU = cSeg_CPU.cuda()
-    Algo = config["Algo"][0]
+    Algo = read_config(config["Algo"])
     gemm_class = torch.classes.flashoverlap_class.OverlapImpl()
     gemm_class.cutlass_init()
     gemm_class.overlap_init()
@@ -84,8 +87,8 @@ def perf_gemm_reorder_token(M, N, K, config):
     props = torch.cuda.get_device_properties(device)
     sm_count = props.multi_processor_count
     wSize = sm_count - 2
-    BM = config["BM"][0]
-    BN = config["BN"][0]
+    BM = read_config(config["BM"])
+    BN = read_config(config["BN"])
     TileNum = (M + BM - 1) // BM * (N + BN - 1) // BN
     WaveNum = (TileNum + wSize - 1) // wSize
     rLDN = 1
@@ -95,7 +98,7 @@ def perf_gemm_reorder_token(M, N, K, config):
         cSeg.append(this_seg)
     cSeg_CPU = torch.tensor(cSeg, dtype=torch.int32)
     cSeg_GPU = cSeg_CPU.cuda()
-    Algo = config["Algo"][0]
+    Algo = read_config(config["Algo"])
     gemm_class = torch.classes.flashoverlap_class.OverlapImpl()
     gemm_class.cutlass_init()
     gemm_class.overlap_init()
@@ -138,6 +141,8 @@ def main():
                 M = int(match.group(1))
                 N = int(match.group(2))
                 K = int(match.group(3))
+                if gpu_name == 'a800':
+                    K = int(match.group(3)) * 4
             else:
                 print(f"Can read M, N, K from {filename}")
                 continue

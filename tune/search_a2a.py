@@ -240,27 +240,27 @@ def perf_running(M: int, N: int, K: int, TopK: int,
 
     return dur.max()
 
-# def integer_partitions(n):
-#     result = []
-#     def helper(remaining, path, start):
-#         if remaining == 0:
-#             result.append(path)
-#             return
-#         for i in range(start, remaining + 1):
-#             helper(remaining - i, path + [i], i)
-#     helper(n, [], 1)
-#     return result
-
 def integer_partitions(n):
     result = []
-    def helper(remaining, path):
+    def helper(remaining, path, start):
         if remaining == 0:
             result.append(path)
             return
-        for i in range(1, remaining + 1):
-            helper(remaining - i, path + [i])
-    helper(n, [])
+        for i in range(start, remaining + 1):
+            helper(remaining - i, path + [i], i)
+    helper(n, [], 1)
     return result
+
+# def integer_partitions(n):
+#     result = []
+#     def helper(remaining, path):
+#         if remaining == 0:
+#             result.append(path)
+#             return
+#         for i in range(1, remaining + 1):
+#             helper(remaining - i, path + [i])
+#     helper(n, [])
+#     return result
 
 def generate_unbalanced_transfer_matrix(token_num, topk, world_size, BM, seed=31, max_attempts=100, imbalance_factor=0.5):
 

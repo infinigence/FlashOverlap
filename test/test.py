@@ -1,9 +1,3 @@
-'''
-    Using multiprocessing for intra-node parallelism, 
-    please specify the GPUs via CUDA_VISIBLE_DEVICES:
-        CUDA_VISIBLE_DEVICES=0,1 python3 result.py --m 4096 --n 8192 --k 4096
-'''
-
 import torch
 import json
 from pathlib import Path
@@ -333,14 +327,16 @@ def main():
     parser.add_argument('--m', type=int, default=4096)
     parser.add_argument('--k', type=int, default=8192)
     parser.add_argument('--n', type=int, default=8192)
+    parser.add_argument('--world_size', type=int, default=2)
     parser.add_argument('--comm_op', type=str, default='all_reduce')
     args = parser.parse_args()
 
     comm_op = args.comm_op
+    world_size = args.world_size
 
     m, n, k = args.m, args.n, args.k
 
-    file_path = f'../configs/m{m}n{n}k{k}_{gpu_name}.json'
+    file_path = f'../configs/m{m}n{n}k{k}_{gpu_name}_{comm_op}_{world_size}.json'
 
     with open(file_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
