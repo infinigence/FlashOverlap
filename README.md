@@ -9,7 +9,7 @@
 
 😊 **A Lightweight Design for Computation-Communication Overlap**
 </div>
-This is the artifact of paper "Efficient and Adaptable Overlapping for Computation and Communication via Signaling and Reordering" accepted by EuroSys'26.
+This is the artifact of paper "Efficient and Adaptable Overlapping for Computation and Communication via Signaling and Reordering" accepted by EuroSys'26. Please switch to the main branch to run a minimal working example. 
 
 ## How *FlashOverlap* Works
 ![FlashOverlap](./docs/_static/image/typical_timeline.jpeg)

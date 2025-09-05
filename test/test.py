@@ -245,7 +245,7 @@ def perf_comm(M: int, N: int, comm_type: str):
     return result_dict[0]
 
 # Function to initialize NCCL in each process
-def perf_baseline_process(rank, world_size, nccl_id, M, N, K, comm_op, result_dict):
+def perf_baseline_process(rank, world_size, nccl_id, M, N, K, comm_op, mode, result_dict):
     torch.cuda.set_device(rank)
 
     A = torch.empty((M, K), dtype=torch.float16, device="cuda").normal_(mean=0., std=0.5)
@@ -256,7 +256,12 @@ def perf_baseline_process(rank, world_size, nccl_id, M, N, K, comm_op, result_di
         D = torch.empty((M // world_size, N), dtype=torch.float16, device="cuda")
 
     # **** Init Baseline Class **** #
-    gemm_comm = torch.classes.flashoverlap_class.BaselineImpl()
+    if mode == 'sequential':
+        gemm_comm = torch.classes.flashoverlap_class.BaselineImpl()
+    elif mode == 'decomposition':
+        gemm_comm = torch.classes.flashoverlap_class.DecompositionImpl()
+    else: 
+        pass
     gemm_comm.nccl_init(rank, world_size, nccl_id)
     gemm_comm.cublas_init()
 
@@ -291,7 +296,7 @@ def perf_baseline_process(rank, world_size, nccl_id, M, N, K, comm_op, result_di
     
     result_dict[rank] = torch.mean(dur).item()
 
-def perf_baseline(M: int, N: int, K: int, comm_op: str):
+def perf_baseline(M: int, N: int, K: int, comm_op: str, mode: str):
     world_size = torch.cuda.device_count()
     if world_size < 2:
         raise RuntimeError("At least 2 GPUs are required for this program.")
@@ -306,7 +311,7 @@ def perf_baseline(M: int, N: int, K: int, comm_op: str):
     # Spawn processes
     mp.spawn(
             perf_baseline_process,
-            args=(world_size, nccl_id, M, N, K, comm_op, result_dict),
+            args=(world_size, nccl_id, M, N, K, comm_op, mode, result_dict),
             nprocs=world_size
         )
     
@@ -344,27 +349,32 @@ def main():
     tile_num = m // data["BM"] * n // data["BN"]
     wave_num = (tile_num + wave_size - 1) // wave_size
 
-    gemm_dur = data["dur"]
-    comm_dur = perf_comm(m, n, comm_op)
     overlap_dur = perf_running(m, n, k, 
         data["BM"], data["BN"], data["Algo"], data["cSeg"], data["hint"], comm_op)
-    baseline_dur = perf_baseline(m, n, k, comm_op)
+    baseline_dur = perf_baseline(m, n, k, comm_op, mode='sequential')
+    decomp_dur = perf_baseline(m, n, k, comm_op, mode='decomposition')
 
-    speedup = baseline_dur / overlap_dur
+    import csv
+    csv_file = "results.csv"
+    fieldnames = ["M", "N", "K", "primitive", "gpu", "baseline", "decomposition", "flashoverlap"]
+    file_exists = os.path.isfile(csv_file)
 
-    print(f"""
-        {'Item':<10} {'Value':>15}
-        {'-----':<10} {'-----':>15}
-        {'m':<10} {m:>15}
-        {'n':<10} {n:>15}
-        {'k':<10} {k:>15}
-        {'tile_num':<10} {tile_num:>15}
-        {'gemm_dur (ms)':<10} {gemm_dur:>15.4f}
-        {'comm_dur (ms)':<10} {comm_dur:>15.4f}
-        {'baseline_dur (ms)':<10} {baseline_dur:>15.4f}
-        {'overlap_dur (ms)':<10} {overlap_dur:>15.4f}
-        {'speedup':<10} {speedup:>15.4f}
-        """)
+    with open(csv_file, mode='a', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+
+        if not file_exists:
+            writer.writeheader()
+    
+        writer.writerow({
+            "M": m,
+            "N": n,
+            "K": k,
+            "primitive": comm_op,
+            "gpu": gpu_name,
+            "baseline": f"{baseline_dur:.4f}",
+            "decomposition": f"{decomp_dur:.4f}", 
+            "flashoverlap": f"{overlap_dur:.4f}"
+        })
 
 if __name__ == "__main__":
     main()
