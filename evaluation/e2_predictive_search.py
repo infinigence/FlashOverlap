@@ -264,7 +264,7 @@ def fast_search(M: int, N: int, K: int, comm_array: torch.Tensor, comm_op: str, 
     min_group_size = div_up(wave_num, 10)
 
     assert hint != None, "Tuning fails! Try to increase min_group_size manully."
-    print("Start predictive searching.")
+    # print("Start predictive searching.")
     
     normalized_wave_num = div_up(wave_num, min_group_size)
     group_size_list = integer_partitions(normalized_wave_num)
@@ -288,7 +288,7 @@ def fast_search(M: int, N: int, K: int, comm_array: torch.Tensor, comm_op: str, 
                 gp[j] = min(gp[j] * (sm_count - 2) * min_group_size, tile_num - acc)
         est_dur = predict_lat(M, N, gemm_dur, comm_array, gp, tile_num, comm_op, world_size)
         act_dur = perf_running(M, N, K, BM, BN, Algo, gp, hint, comm_op, world_size)
-        print(f"Group size: {gp}, Estimated duration: {est_dur:.2f} ms, Actual duration: {act_dur:.2f} ms")
+        # print(f"Group size: {gp}, Estimated duration: {est_dur:.2f} ms, Actual duration: {act_dur:.2f} ms")
 
         pred_error = abs(est_dur - act_dur) / act_dur * 100
         pred_error_list.append(pred_error)
@@ -312,12 +312,15 @@ def main():
     config_files = glob.glob(f'../configs/m*n*k*_{gpu_name}_*.json')
 
     import random
-    if len(config_files) > 10:
-        selected_files = random.sample(config_files, 10)
+    if len(config_files) > 2:
+        selected_files = random.sample(config_files, 2)
     else:
         selected_files = config_files
-    
-    for i, config_file in enumerate(tqdm(selected_files, desc="Processing config files")):
+
+    all_errors = []
+    all_rel_perfs = []
+
+    for config_file in tqdm(selected_files, desc="Processing config files", unit="file"):
         try:
             filename = os.path.basename(config_file)
             pattern = r'm(\d+)n(\d+)k(\d+)_([a-z0-9]+)_([a-z_]+)_(\d+)\.json'
@@ -329,20 +332,32 @@ def main():
                 comm_op = match.group(5)
                 file_world_size = int(match.group(6))
                 
-                tqdm.write(f"Testing M={M}, N={N}, K={K}, comm_op={comm_op}, world_size={file_world_size}")
-                
                 comm_array = torch.load(f"../configs/bandwidth_{comm_op}_gpu{file_world_size}.pt")
-                tqdm.write("Bandwidth curve captured.")
                 
                 error_list, rel_perf = fast_search(M, N, K, comm_array, comm_op, file_world_size)
-                tqdm.write(f"Results for {filename}: {error_list} {rel_perf:.2f}%")
                 
+                all_errors.extend(error_list)  
+                all_rel_perfs.append(rel_perf)  
+
             else:
-                tqdm.write(f"Can't read {filename} properly.")
-                
+                pass
+
         except Exception as e:
-            tqdm.write(f"Error processing {config_file}: {e}")
-            continue
+            pass
+
+    if all_errors:
+        error_mean = np.mean(all_errors)
+        error_std = np.std(all_errors)
+        print(f"Error: {error_mean:.4f} ± {error_std:.4f}")
+    else:
+        print("Error: No valid error data collected.")
+
+    if all_rel_perfs:
+        perf_mean = np.mean(all_rel_perfs)
+        perf_std = np.std(all_rel_perfs)
+        print(f"Relative Perf of Predictive Search: {perf_mean:.2f}% ± {perf_std:.2f}%")
+    else:
+        print("Rel Perf: No valid performance data collected.")
 
 if __name__ == "__main__":
     main()

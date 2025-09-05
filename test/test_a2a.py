@@ -358,7 +358,7 @@ def main():
             "N": n,
             "K": k,
             "primitive": comm_op,
-            "gpu": gpu_name,
+            "gpu": world_size,
             "baseline": f"{baseline_dur:.4f}",
             "decomposition": f"{decomp_dur:.4f}", 
             "flashoverlap": f"{overlap_dur:.4f}"

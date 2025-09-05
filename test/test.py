@@ -159,8 +159,7 @@ def perf_running_process(rank, world_size, nccl_id,
     
 def perf_running(M: int, N: int, K: int, 
     BM: int, BN: int, Algo: int, 
-    cSeg: list, hint: list, comm_op: str):
-    world_size = torch.cuda.device_count()
+    cSeg: list, hint: list, comm_op: str, world_size: int):
     if world_size < 2:
         raise RuntimeError("At least 2 GPUs are required for this program.")
 
@@ -296,8 +295,8 @@ def perf_baseline_process(rank, world_size, nccl_id, M, N, K, comm_op, mode, res
     
     result_dict[rank] = torch.mean(dur).item()
 
-def perf_baseline(M: int, N: int, K: int, comm_op: str, mode: str):
-    world_size = torch.cuda.device_count()
+def perf_baseline(M: int, N: int, K: int, comm_op: str, world_size: int, mode: str):
+
     if world_size < 2:
         raise RuntimeError("At least 2 GPUs are required for this program.")
     # Use the custom NCCL initialization wrapper to get a unique NCCL ID
@@ -350,9 +349,9 @@ def main():
     wave_num = (tile_num + wave_size - 1) // wave_size
 
     overlap_dur = perf_running(m, n, k, 
-        data["BM"], data["BN"], data["Algo"], data["cSeg"], data["hint"], comm_op)
-    baseline_dur = perf_baseline(m, n, k, comm_op, mode='sequential')
-    decomp_dur = perf_baseline(m, n, k, comm_op, mode='decomposition')
+        data["BM"], data["BN"], data["Algo"], data["cSeg"], data["hint"], comm_op, world_size)
+    baseline_dur = perf_baseline(m, n, k, comm_op, world_size, mode='sequential')
+    decomp_dur = perf_baseline(m, n, k, comm_op, world_size, mode='decomposition')
 
     import csv
     csv_file = "results.csv"
@@ -370,7 +369,7 @@ def main():
             "N": n,
             "K": k,
             "primitive": comm_op,
-            "gpu": gpu_name,
+            "gpu": world_size,
             "baseline": f"{baseline_dur:.4f}",
             "decomposition": f"{decomp_dur:.4f}", 
             "flashoverlap": f"{overlap_dur:.4f}"
