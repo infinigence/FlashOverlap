@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import torch.multiprocessing as mp
 import numpy as np
+from utils import get_swizzled_tile_order_direct, get_grouped_tile_index, read_algo_dict
 
 torch.ops.load_library("../build/lib/libst_pybinding.so")
 
@@ -391,7 +392,15 @@ def exhaustive_search(M: int, N: int, K: int, comm_op: str, world_size: int):
             hint = result[1]
             break
 
-    assert hint != None, "Tuning fails! Try to increase min_group_size manully."
+    if hint == None:
+        BM = BM_list["BM"][0]
+        BN = BM_list["BN"][0]
+        Algo = BM_list["Algo"][0]
+        wave_num = div_up(tile_num, (sm_count - 2))
+        min_group_size = div_up(wave_num, 10)
+        swizzle_size = read_algo_dict(Algo, "../configs/AlgoDict.pt")
+        order = get_swizzled_tile_order_direct(swizzle_size, BM, BN, M, N)
+        hint = get_grouped_tile_index(order, min_group_size * (sm_count - 2))
     print("Start exhaustive searching.")
 
     min_dur = 1e5
@@ -430,7 +439,7 @@ def fast_search(M: int, N: int, K: int, comm_array: torch.Tensor, comm_op: str, 
     sm_count = props.multi_processor_count
 
     hint = None
-    for t in range(10):
+    for t in range(5):
         BM = BM_list[t]
         BN = BN_list[t]
         gemm_dur = gemm_dur_list[t]
@@ -448,7 +457,17 @@ def fast_search(M: int, N: int, K: int, comm_array: torch.Tensor, comm_op: str, 
             hint = result[1]
             break
 
-    assert hint != None, "Tuning fails! Try to increase min_group_size manully."
+    if hint == None:
+        BM = BM_list[0]
+        BN = BN_list[0]
+        gemm_dur = gemm_dur_list[0]
+        Algo = Algo_list[0]
+        tile_num = div_up(M, BM) * div_up(N, BN)
+        wave_num = div_up(tile_num, (sm_count - 2))
+        min_group_size = div_up(wave_num, 10)
+        swizzle_size = read_algo_dict(Algo, "../configs/AlgoDict.pt")
+        order = get_swizzled_tile_order_direct(swizzle_size, BM, BN, M, N)
+        hint = get_grouped_tile_index(order, min_group_size * (sm_count - 2))
     print("Start predictive searching.")
     
     min_dur = 1e5

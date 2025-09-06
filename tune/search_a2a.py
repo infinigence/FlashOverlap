@@ -6,6 +6,7 @@ from pathlib import Path
 import torch.multiprocessing as mp
 from search import compute_hint
 import os
+from utils import get_swizzled_tile_order_direct, get_grouped_tile_index, read_algo_dict
 
 torch.ops.load_library("../build/lib/libst_pybinding.so")
 
@@ -31,15 +32,18 @@ def load_json(M: int, N: int, K: int, world_size: int):
         hint = data["hint"]
         BM = data["BM"]
         BN = data["BN"]
+        Algo = data["Algo"]
+        dur = data["dur"]
         tile_num = div_up(M, BM) * div_up(N, BN)
         wave_num = div_up(tile_num, (sm_count - 2))
         min_group_size = div_up(wave_num, 10)
     else:
         hint = None
-        for t in range(10):
+        for t in range(5):
             BM = data["BM"][t]
             BN = data["BN"][t]
             Algo = data["Algo"][t]
+            dur = data["dur"][t]
             
             tile_num = div_up(M, BM) * div_up(N, BN)
             wave_num = div_up(tile_num, (sm_count - 2))
@@ -53,18 +57,31 @@ def load_json(M: int, N: int, K: int, world_size: int):
             if result[0] == True and (BM * BN == 256 * 128):
                 hint = result[1]
                 break
+        
+        # Exception handling: theoretical calculation
+        if hint == None:
+            BM = data["BM"][0]
+            BN = data["BN"][0]
+            Algo = data["Algo"][0]
+            dur = data["dur"][0]
+            wave_num = div_up(tile_num, (sm_count - 2))
+            min_group_size = div_up(wave_num, 10)
+            swizzle_size = read_algo_dict(Algo, "../configs/AlgoDict.pt")
+            order = get_swizzled_tile_order_direct(swizzle_size, BM, BN, M, N)
+            hint = get_grouped_tile_index(order, min_group_size * (sm_count - 2))
 
-        assert hint != None, "Tuning fails! Try to increase min_group_size manully."
+        assert hint != None, "Tuning fails! Try to tune manully."
+        
         data["BM"] = BM
         data["BN"] = BN
         data["rLDN"] = 1
         data["Algo"] = Algo
-        data["dur"] = data["dur"][t]
+        data["dur"] = dur
         data["hint"] = hint
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=4)
     
-    return data["BM"], data["BN"], data["dur"], data["Algo"], hint, min_group_size
+    return BM, BN, dur, Algo, hint, min_group_size
 
 def save_solution(M: int, N: int, K: int, gp_list: list, comm_op: str, world_size: int, local_transfer_matrix):
     device = torch.cuda.current_device()
@@ -395,7 +412,8 @@ def optimize_exhaustive(M: int, N: int, K: int, TopK: int, transfer_matrix):
                 if gp[j] > 0:
                     this_hint = hint_list[k][acc - gp[j] : acc].copy()
                     # iter_transfer_matrix[j, k, :] = count_indices_in_bins(this_hint,  workload_list[k][1] * transfer_matrix[k, :])
-                    iter_transfer_matrix[j, k, :] = count_indices_in_bins(this_hint,  N * transfer_matrix[k, :] // (workload_list[k][0] * workload_list[k][1]))
+                    # iter_transfer_matrix[j, k, :] = count_indices_in_bins(this_hint,  N * transfer_matrix[k, :] // (workload_list[k][0] * workload_list[k][1]))
+                    iter_transfer_matrix[j, k, :] = count_indices_in_bins(this_hint,  N * transfer_matrix[k, :] // (workload_list[k][0] * workload_list[k][1])) * (workload_list[k][0] * workload_list[k][1])
                     # print(N * transfer_matrix[k, :] // (workload_list[k][0] * workload_list[k][1]))
                 
                 # if j < iter_num - 1:

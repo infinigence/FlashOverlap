@@ -374,11 +374,11 @@ void OverlapImpl::GemmAll2AllOverlap(
         NCCL_CHECK(ncclGroupStart());
         for (int i = 0; i < this->my_size; i++){
             if (i == this->my_rank){continue;}
-            size_t sendcount = M * N / TileNum * mlen_cpu_ptr[this->my_rank * this->my_size + i];
+            size_t sendcount = mlen_cpu_ptr[this->my_rank * this->my_size + i];
             NCCL_CHECK(ncclSend((void *)(c_ptr + src_acc_addr), sendcount, ncclFloat16, i, this->comm, this->comm_stream));
             src_acc_addr += sendcount;
 
-            size_t recvcount = M * N / TileNum * mlen_cpu_ptr[i * this->my_size + this->my_rank];
+            size_t recvcount = mlen_cpu_ptr[i * this->my_size + this->my_rank];
             NCCL_CHECK(ncclRecv((void *)(d_ptr + dst_acc_addr), recvcount, ncclFloat16, i, this->comm, this->comm_stream));
             dst_acc_addr += recvcount;
         }
