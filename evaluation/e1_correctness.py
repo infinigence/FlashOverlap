@@ -39,7 +39,7 @@ def main():
                 elif comm_op == 'reduce_scatter':
                     script_path = '../example/correctness_rs.py'
                 else:
-                    print(f"Unknown comm_op: {comm_op}, skipping...")
+                    # print(f"Unknown comm_op: {comm_op}, skipping...")
                     continue
                 
                 cmd = [

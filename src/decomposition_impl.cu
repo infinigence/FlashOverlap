@@ -157,7 +157,7 @@ void DecompositionImpl::GemmReduceScatter(at::Tensor A, at::Tensor B, at::Tensor
         // Launch ReduceScatter after GEMM
         size_t recvcount = (M / ITER_NUM * N) / this->my_size;
         NCCL_CHECK(ncclReduceScatter((void *)(c_ptr + M / ITER_NUM * N * i), 
-            (void *)(d_ptr + M / ITER_NUM * N * i + this->my_rank * recvcount), 
+            (void *)(d_ptr + recvcount * i), 
             recvcount, ncclFloat16, ncclSum, this->comm, this->comm_stream));
     }
 

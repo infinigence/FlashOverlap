@@ -31,7 +31,8 @@ def main():
         if match:
             config_files.append((file_path, match))
         else:
-            print(f"⚠️ Skipping unmatched file: {file_path.name}")
+            # print(f"⚠️ Skipping unmatched file: {file_path.name}")
+            pass
 
     if not config_files:
         print("❌ No valid config files found.")

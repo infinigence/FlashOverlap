@@ -312,8 +312,8 @@ def main():
     config_files = glob.glob(f'../configs/m*n*k*_{gpu_name}_*.json')
 
     import random
-    if len(config_files) > 2:
-        selected_files = random.sample(config_files, 2)
+    if len(config_files) > 5:
+        selected_files = random.sample(config_files, 5)
     else:
         selected_files = config_files
 

@@ -131,8 +131,15 @@ def main():
     tile_overheads = []
     token_overheads = []
     first_config = True
-    
-    for config_file in config_files:
+
+    import random
+    from tqdm import tqdm
+    if len(config_files) > 20:
+        selected_files = random.sample(config_files, 20)
+    else:
+        selected_files = config_files
+
+    for config_file in tqdm(selected_files):
         try:
             filename = os.path.basename(config_file)
             pattern = r'm(\d+)n(\d+)k(\d+)'
