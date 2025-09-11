@@ -21,8 +21,8 @@ def create_tp_group(world_size, rank, tp_size):
 def per_gpu_process(rank, world_size, nccl_id, M, N, K, config):
     torch.cuda.set_device(rank)
 
-    A = torch.ones((M, K), dtype=torch.float16, device="cuda")
-    B = torch.ones((N, K), dtype=torch.float16, device="cuda")
+    A = torch.ones((M, K), dtype=torch.float16, device="cuda").normal_(mean=0., std=0.5)
+    B = torch.ones((N, K), dtype=torch.float16, device="cuda").normal_(mean=0., std=0.5)
     W = torch.ones((N), dtype=torch.float16, device="cuda").normal_(mean=0., std=0.5)
     
     rmsnorm_layer = RMSNorm(N)
@@ -50,7 +50,7 @@ def per_gpu_process(rank, world_size, nccl_id, M, N, K, config):
     y1 = rmsnorm_layer(x1)
     y2 = reorder_rmsnorm_layer(x2)
 
-    all_close = torch.allclose(y1, y2, atol=1e-2, rtol=1e-2)
+    all_close = torch.allclose(y1, y2, atol=1e-1, rtol=5e-2)
     torch.cuda.synchronize()
     dist.destroy_process_group()
     

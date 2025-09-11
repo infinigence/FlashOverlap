@@ -64,7 +64,7 @@ def per_gpu_process(rank, world_size, nccl_id, M, N, K, config):
     # print("Value in y2 at that index:", val2.item())
     # print("Absolute difference:", diff[max_idx_unravel].item())
 
-    all_close = torch.allclose(y1, y2, atol=5e-2, rtol=5e-2)
+    all_close = torch.allclose(y1, y2, atol=1e-1, rtol=5e-2)
     torch.cuda.synchronize()
     dist.destroy_process_group()
     

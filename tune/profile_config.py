@@ -13,6 +13,13 @@ from heapq import nsmallest
 
 torch.ops.load_library("../build/lib/libst_pybinding.so")
 
+skip_set = {
+    24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
+    42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53,
+    66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77,
+    90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101
+}
+
 def perf_wrapped_gemm(M: int, N: int, K: int, Algo: int):
     cutlass_gemm = torch.classes.flashoverlap_class.OverlapImpl()
     cutlass_gemm.cutlass_init()
@@ -82,11 +89,17 @@ def main():
     parser.add_argument('--n', type=int, default=4096)
     args = parser.parse_args()
 
+    device = torch.cuda.current_device()
+    props = torch.cuda.get_device_properties(device)
+    gpu_name = props.name[7:11].lower()
+
     algo_dict = torch.load("../configs/AlgoDict.pt", weights_only=True)
     
     data_list = []
     for params_tuple, index in algo_dict.items():
         # print(index, params_tuple)
+        if gpu_name != 'a800' and index in skip_set:
+            continue
         t = perf_wrapped_gemm(args.m, args.n, args.k, index)
         data_list.append((t, params_tuple, index))
 
