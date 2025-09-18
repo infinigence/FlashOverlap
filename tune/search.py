@@ -393,9 +393,9 @@ def exhaustive_search(M: int, N: int, K: int, comm_op: str, world_size: int):
             break
 
     if hint == None:
-        BM = BM_list["BM"][0]
-        BN = BM_list["BN"][0]
-        Algo = BM_list["Algo"][0]
+        BM = BM_list[0]
+        BN = BN_list[0]
+        Algo = Algo_list[0]
         wave_num = div_up(tile_num, (sm_count - 2))
         min_group_size = div_up(wave_num, 10)
         swizzle_size = read_algo_dict(Algo, "../configs/AlgoDict.pt")
