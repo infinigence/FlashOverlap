@@ -163,12 +163,10 @@ Open the test dir and run the script.
 
 ## Citation
 ```
-    @misc{hong2025flashoverlap,
+    @article{hong2025flashoverlap,
       title={Efficient and Adaptable Overlapping for Computation and Communication via Signaling and Reordering},
       author={Ke Hong, Xiuhong Li, Minxu Liu, Qiuli Mao, Tianqi Wu, Zixiao Huang, Lufang Chen, Zhong Wang, Yichong Zhang, Zhenhua Zhu, Guohao Dai, Yu Wang},
-      year={2025},
-      eprint={2504.19519},
-      archivePrefix={arXiv},
-      primaryClass={cs.DC}
+      journal={arXiv preprint arXiv:2504.19519},
+      year={2025}
     }
 ```
