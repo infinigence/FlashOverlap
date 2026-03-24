@@ -122,20 +122,20 @@ def main():
             if rank == 0:
                 print(f"Testing size: {size/2**20:.1f}MB")
 
-            avg_time = perf_comm_test(1024, size // 1024, args.comm_op)
+            avg_time_ms = perf_comm_test(1024, size // 1024, args.comm_op)
+            avg_time_s = avg_time_ms / 1000.0  # elapsed_time() returns ms, convert to s
 
             if rank == 0:
-                # Calculate bandwidth (GB/s)
+                # Calculate busbw (GB/s)
                 data_size_bytes = size * 2  # float16 = 2 bytes
                 if args.comm_op == "all_reduce":
-                    total_data = data_size_bytes * 2 * (world_size - 1)
+                    busbw = data_size_bytes * 2 * (world_size - 1) / world_size / avg_time_s / (1024**3)
                 else:  # reduce_scatter
-                    total_data = data_size_bytes * (world_size - 1)
+                    busbw = data_size_bytes * (world_size - 1) / world_size / avg_time_s / (1024**3)
 
-                bandwidth = (total_data / (avg_time)) / (1024**3)  # GB/s
-                bandwidths.append(bandwidth)
+                bandwidths.append(busbw)
                 comm_array[i, 0] = size
-                comm_array[i, 1] = bandwidth
+                comm_array[i, 1] = busbw
 
             dist.barrier()  # Sync before next size
 
@@ -146,8 +146,8 @@ def main():
             plt.xscale('log', base=2)
             plt.yscale('log')
             plt.xlabel('Data Size (elements)')
-            plt.ylabel('Bandwidth (GB/s)')
-            plt.title(f'{args.comm_op} Bandwidth (World Size: {world_size})')
+            plt.ylabel('BusBW (GB/s)')
+            plt.title(f'{args.comm_op} Bus Bandwidth (World Size: {world_size})')
             plt.grid(True, which="both", ls="-")
             plt.savefig(f'bandwidth_{args.comm_op}_ws{world_size}.png', dpi=300, bbox_inches='tight')
 

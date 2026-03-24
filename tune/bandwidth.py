@@ -82,28 +82,28 @@ def main():
         # 创建输入张量（torch.float16）
         input_data = torch.randn(size, dtype=torch.float16, device='cuda')
 
-        avg_time = perf_comm(1024, size // 1024, args.comm_op)
+        avg_time_ms = perf_comm(1024, size // 1024, args.comm_op)
+        avg_time_s = avg_time_ms / 1000.0  # elapsed_time() returns ms, convert to s
         
-        # 计算带宽（单位：GB/s）
+        # 计算 busbw（单位：GB/s）
         data_size_bytes = input_data.numel() * input_data.element_size()
         if args.comm_op == "all_reduce":
-            total_data_transferred = data_size_bytes * 2 * (world_size - 1) # AllReduce 的数据传输量
+            busbw = data_size_bytes * 2 * (world_size - 1) / world_size / avg_time_s / (1024 ** 3)
         elif args.comm_op == "reduce_scatter":
-            total_data_transferred = data_size_bytes * (world_size - 1) 
+            busbw = data_size_bytes * (world_size - 1) / world_size / avg_time_s / (1024 ** 3)
         else:
             raise ValueError("Unsupported communication operation")
 
-        bandwidth = (total_data_transferred / avg_time) / (1024 ** 3)  # 转换为 GB/s
-        bandwidths.append(bandwidth)
+        bandwidths.append(busbw)
 
         comm_array[i, 0] = size
-        comm_array[i, 1] = bandwidth
+        comm_array[i, 1] = busbw
         
     plt.plot(data_sizes, bandwidths, marker='o')
     # plt.xscale('log', base=2)
     plt.xlabel('Data Size (elements)')
-    plt.ylabel('Bandwidth (GB/s)')
-    plt.title('Bandwidth vs Data Size')
+    plt.ylabel('BusBW (GB/s)')
+    plt.title('Bus Bandwidth vs Data Size')
     plt.grid(True)
     plt.savefig('bandwidth.png', dpi=300, bbox_inches='tight')
     plt.show()

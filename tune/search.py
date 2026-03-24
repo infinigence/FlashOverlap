@@ -198,9 +198,10 @@ def interpolate_latency(samples, x, comm_op):
 
     # 使用 torch.interp 进行线性插值
     if comm_op == "all_reduce":
-        latency = x * 2 * 2 * (world_size - 1) / y / (1024 ** 3)
+        # busbw stored in GB/s; latency_ms = msgsize * 2*(n-1)/n / (busbw * GiB) * 1000
+        latency = x * 2 * 2 * (world_size - 1) / world_size / y / (1024 ** 3) * 1000
     elif comm_op == "reduce_scatter":
-        latency = x * 2 * (world_size - 1) / y / (1024 ** 3)
+        latency = x * 2 * (world_size - 1) / world_size / y / (1024 ** 3) * 1000
 
     return latency.item()
 
