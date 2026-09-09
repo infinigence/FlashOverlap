@@ -1,7 +1,7 @@
 '''
     Using multiprocessing for distributed running, 
     please specify the GPUs via CUDA_VISIBLE_DEVICES:
-        e.g., CUDA_VISIBLE_DEVICES=0,1 python3 search.py --m 4096 --n 8192 --k 4096 --comm_op all_reduce
+        e.g., CUDA_VISIBLE_DEVICES=0,1 python3 search.py --m 4096 --n 8192 --k 4096 --comm_op all_reduce --search_policy robust
 '''
 
 import torch
@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 import torch.multiprocessing as mp
 import numpy as np
+import time
 
 torch.ops.load_library("../build/lib/libst_pybinding.so")
 
@@ -86,7 +87,15 @@ def compute_hint_process(rank, world_size, nccl_id,
     result_dict):
 
     TileNum = div_up(M, BM) * div_up(N, BN)
-    WaveNum = div_up(TileNum, wSize) 
+    # TN=1 aliases the monitor global counter with a segment counter in the CUDA kernel.
+    # Tile order is deterministic in this degenerate layout, so skip monitor mode.
+    if div_up(N, BN) == 1:
+        result_dict[rank] = (
+            True, list(range(TileNum)), [TileNum], [list(range(TileNum))],
+            [], None, [TileNum],
+        )
+        return
+    WaveNum = div_up(TileNum, wSize)
 
     cSeg = []
     for i in range(WaveNum):
@@ -114,9 +123,10 @@ def compute_hint_process(rank, world_size, nccl_id,
     if comm_op == "reduce_scatter":
         D = torch.empty((M // world_size, N), dtype=torch.float16, device="cuda")
         RowArray = generate_row_remap_array(M, N, BM, BN, cSeg, world_size)
-
+    
     _warm_up = 100
     _sample = 10
+    _probe = 50
 
     if comm_op == "all_reduce":
         for _ in range(_warm_up):
@@ -142,19 +152,45 @@ def compute_hint_process(rank, world_size, nccl_id,
         assert comm_op in ["all_reduce", "reduce_scatter"], \
             f"comm_op must be 'all_reduce' or 'reduce_scatter', but got '{comm_op}'"
 
-    hint = []
-    is_consistency = True
-    for w in range(WaveNum):
-        index = torch.where(((samples >= w * wSize) * (samples < (w + 1) * wSize)).sum(dim=0) == 10)
+    torch.cuda.synchronize(rank)
+    profile_start = time.perf_counter()
+    for _ in range(_probe):
+        if comm_op == "all_reduce":
+            gemm_class.gemm_allreduce_overlap(
+                A, B, C, MonitoredMatrix, ReorderedArray, 1,
+                cSeg_CPU, cSeg_GPU, Algo, False,
+            )
+        else:
+            gemm_class.gemm_reducescatter_overlap(
+                A, B, C, D, MonitoredMatrix, ReorderedArray, RowArray, 1,
+                cSeg_CPU, cSeg_GPU, Algo, False,
+            )
+    torch.cuda.synchronize(rank)
+    profile_latency = (time.perf_counter() - profile_start) * 1000 / _probe
 
-        if w < WaveNum - 1:
-            if index[0].shape[0] < wSize:
-                is_consistency = False
-                break
-
-        hint = hint + index[0].tolist()
-        
-    result_dict[rank] = (is_consistency, hint)
+    # Local conservative grouping: keep each stable tile in its observed wave.
+    # If a tile jitters across several waves, assign it to the last wave in
+    # that observed range, and append it after the stable tiles of that wave.
+    # This preserves the candidate while delaying only the affected local
+    # boundary tiles, rather than moving every unstable tile to the task tail.
+    stable_by_wave = [[] for _ in range(WaveNum)]
+    jitter_by_wave = [[] for _ in range(WaveNum)]
+    sample_waves = torch.div(samples, wSize, rounding_mode='floor')
+    for tile in range(TileNum):
+        observed = torch.unique(sample_waves[:, tile]).tolist()
+        observed = [min(max(int(w), 0), WaveNum - 1) for w in observed]
+        last_wave = max(observed)
+        if len(observed) == 1:
+            stable_by_wave[last_wave].append(tile)
+        else:
+            jitter_by_wave[last_wave].append(tile)
+    wave_groups = [stable_by_wave[w] + jitter_by_wave[w] for w in range(WaveNum)]
+    groups = [g for g in wave_groups if g]
+    hint = [tile for group in groups for tile in group]
+    safe_cSeg = [len(group) for group in groups]
+    result_dict[rank] = (
+        True, hint, safe_cSeg, wave_groups, [], profile_latency, cSeg,
+    )
 
 def compute_hint(M: int, N: int, K: int,
     BM: int, BN: int, Algo: list, wSize: int, comm_op: str):
@@ -175,7 +211,12 @@ def compute_hint(M: int, N: int, K: int,
             nprocs=world_size
         )
 
-    return result_dict[0]
+    result = result_dict[0]
+    measured = [result_dict[r][5] for r in range(world_size)
+                if result_dict[r][5] is not None]
+    if measured:
+        result = result[:5] + (max(measured), result[6])
+    return result
 
 def interpolate_latency(samples, x, comm_op):
     world_size = torch.cuda.device_count()
@@ -233,6 +274,21 @@ def predict_lat(M: int, N: int, gemm_dur: float,
     acc_comm_dur = max(acc_comp_dur, acc_comm_dur) + interpolate_latency(comm_array, M*N // tile_num * gp[-1], comm_op)
 
     return acc_comm_dur
+
+def predict_overlap_latency(M, N, gemm_dur, comm_array, cseg, tile_num,
+                            comm_op, profile_latency=None, profile_cseg=None):
+    """Predict overlap latency, calibrated by the existing hint profiling."""
+    estimate = predict_lat(
+        M, N, gemm_dur, comm_array, cseg, tile_num, comm_op,
+    )
+    if profile_latency is None or not profile_cseg:
+        return estimate
+    profile_estimate = predict_lat(
+        M, N, gemm_dur, comm_array, profile_cseg, tile_num, comm_op,
+    )
+    if profile_estimate <= 0:
+        return estimate
+    return estimate * profile_latency / profile_estimate
 
 def reorder_indices(S, hint):
     # Generate the original array of indices [0, 1, ..., S-1]
@@ -439,67 +495,166 @@ def exhaustive_search(M: int, N: int, K: int, comm_op: str):
     print("Solution saved.")
 
 
-def fast_search(M: int, N: int, K: int, comm_array: torch.Tensor, comm_op: str):
-    # load the .json file
-    BM_list, BN_list, gemm_dur_list, Algo_list = load_json(M, N, K)
-
-    # get the SM count
-    device = torch.cuda.current_device()
-    props = torch.cuda.get_device_properties(device)
-    sm_count = props.multi_processor_count
-
-    hint = None
-    for t in range(10):
-        BM = BM_list[t]
-        BN = BN_list[t]
-        gemm_dur = gemm_dur_list[t]
-        Algo = Algo_list[t]
-
-        tile_num = div_up(M, BM) * div_up(N, BN)
-        wave_num = div_up(tile_num, (sm_count - 2))
-
-        min_group_size = div_up(wave_num, 10)
-
-        #compute hint
-        result = compute_hint(M, N, K, BM, BN, Algo, min_group_size * (sm_count - 2), comm_op)
-
-        if result[0] == True:
-            hint = result[1]
-            break
-
-    assert hint != None, "Tuning fails! Try to increase min_group_size manully."
-    print("Start predictive searching.")
-    
-    min_dur = 1e5
+def predict_target_cseg(M, N, gemm_dur, comm_array, tile_num, wave_num,
+                        min_group_size, sm_count, comm_op):
+    best_est = 1e5
+    best_cseg = None
     normalized_wave_num = div_up(wave_num, min_group_size)
-    group_size_list = integer_partitions(normalized_wave_num)
-    
-    group_choice = len(group_size_list)
-    for i in range(group_choice):
-        gp = group_size_list[i]
-        iter_num = len(gp)
-        acc = 0
-        # avoid cold start
-        if iter_num > 5 and gp[0] > 2:
+    for gp0 in integer_partitions(normalized_wave_num):
+        gp = list(gp0)
+        if len(gp) > 5 and gp[0] > 2:
             continue
-        for j in range(iter_num):
-            if j < iter_num - 1:
+        acc = 0
+        for j in range(len(gp)):
+            if j < len(gp) - 1:
                 gp[j] = gp[j] * (sm_count - 2) * min_group_size
                 acc += gp[j]
             else:
-                gp[j] = min(gp[j] * (sm_count - 2) * min_group_size, tile_num - acc)
-        est_dur = predict_lat(M, N, gemm_dur, comm_array, gp, tile_num, comm_op)
-        
-        if est_dur < min_dur:
-            min_dur = est_dur
-            cSeg = gp
-    print("Search process finished.")
+                gp[j] = min(
+                    gp[j] * (sm_count - 2) * min_group_size,
+                    tile_num - acc,
+                )
+        est = predict_lat(M, N, gemm_dur, comm_array, gp, tile_num, comm_op)
+        if est < best_est:
+            best_est = est
+            best_cseg = gp
+    assert best_cseg is not None
+    return best_cseg
 
-    searched_lat = perf_running(M, N, K, BM, BN, Algo, cSeg, hint, comm_op)
-    print("Searched latency: %.4f" % searched_lat)
-    print("Best solution: ", cSeg)
-    save_solution(M, N, K, BM, BN, gemm_dur, Algo, hint, cSeg)
-    print("Solution saved.")
+
+def merge_local_wave_groups(wave_groups, target_cseg, wSize, tile_num):
+    merged_groups = []
+    wave_pos = 0
+    for target in target_cseg:
+        wave_count = max(1, div_up(target, wSize))
+        group = []
+        for _ in range(wave_count):
+            if wave_pos < len(wave_groups):
+                group.extend(wave_groups[wave_pos])
+            wave_pos += 1
+        if group:
+            merged_groups.append(group)
+
+    hint = [tile for group in merged_groups for tile in group]
+    safe_cseg = [len(group) for group in merged_groups]
+    assert len(hint) == tile_num
+    assert len(set(hint)) == tile_num
+    assert sum(safe_cseg) == tile_num
+    return hint, safe_cseg
+
+
+def build_candidate(M, N, K, index, BM, BN, gemm_dur, Algo,
+                    comm_array, comm_op, sm_count):
+    tile_num = div_up(M, BM) * div_up(N, BN)
+    wave_num = div_up(tile_num, sm_count - 2)
+    min_group_size = div_up(wave_num, 10)
+    wSize = min_group_size * (sm_count - 2)
+    result = compute_hint(M, N, K, BM, BN, Algo, wSize, comm_op)
+    target_cseg = predict_target_cseg(
+        M, N, gemm_dur, comm_array, tile_num, wave_num,
+        min_group_size, sm_count, comm_op,
+    )
+    hint, safe_cseg = merge_local_wave_groups(
+        result[3], target_cseg, wSize, tile_num,
+    )
+    latency = float(predict_overlap_latency(
+        M, N, gemm_dur, comm_array, safe_cseg, tile_num, comm_op,
+        result[5], result[6],
+    ))
+    print(
+        f'candidate={index} BM={BM} BN={BN} Algo={Algo} '
+        f'target={target_cseg} safe={safe_cseg} '
+        f'pred_latency={latency:.4f}'
+    )
+    return {
+        'index': index, 'BM': BM, 'BN': BN,
+        'gemm_dur': gemm_dur, 'Algo': Algo,
+        'hint': hint, 'cSeg': safe_cseg, 'latency': latency,
+    }
+
+
+def fast_search(M: int, N: int, K: int, comm_array: torch.Tensor, comm_op: str):
+    BM_list, BN_list, gemm_dur_list, Algo_list = load_json(M, N, K)
+    sm_count = torch.cuda.get_device_properties(
+        torch.cuda.current_device()
+    ).multi_processor_count
+    candidate_count = min(10, len(BM_list))
+    best = None
+
+    print(f'Start fast conservative search ({candidate_count} candidates max).')
+    for t in range(candidate_count):
+        try:
+            best = build_candidate(
+                M, N, K, t, BM_list[t], BN_list[t],
+                gemm_dur_list[t], Algo_list[t],
+                comm_array, comm_op, sm_count,
+            )
+            break
+        except Exception as exc:
+            print(f'candidate={t} Algo={Algo_list[t]} skipped: {exc}')
+
+    assert best is not None, 'All conservative candidates failed.'
+    measured_latency = float(perf_running(
+        M, N, K, best['BM'], best['BN'], best['Algo'],
+        best['cSeg'], best['hint'], comm_op,
+    ))
+    print(
+        f"Fast candidate={best['index']} Algo={best['Algo']} "
+        f"measured_latency={measured_latency:.4f} cSeg={best['cSeg']}"
+    )
+    save_solution(
+        M, N, K, best['BM'], best['BN'], best['gemm_dur'],
+        best['Algo'], best['hint'], best['cSeg'],
+    )
+    print('Solution saved.')
+
+
+def robust_search(M: int, N: int, K: int, comm_array: torch.Tensor, comm_op: str):
+    # Evaluate every top GEMM candidate after applying the local conservative
+    # wave assignment. Choose by measured end-to-end overlap latency, not by
+    # bare GEMM latency or by the first candidate that passes profiling.
+    BM_list, BN_list, gemm_dur_list, Algo_list = load_json(M, N, K)
+    device = torch.cuda.current_device()
+    props = torch.cuda.get_device_properties(device)
+    sm_count = props.multi_processor_count
+    candidate_count = min(10, len(BM_list))
+    candidates = []
+
+    print(f'Start multi-candidate conservative search ({candidate_count} candidates).')
+    for t in range(candidate_count):
+        try:
+            candidates.append(build_candidate(
+                M, N, K, t, BM_list[t], BN_list[t],
+                gemm_dur_list[t], Algo_list[t],
+                comm_array, comm_op, sm_count,
+            ))
+        except Exception as exc:
+            print(f'candidate={t} Algo={Algo_list[t]} skipped: {exc}')
+
+    assert candidates, 'All conservative candidates failed.'
+    finalists = sorted(candidates, key=lambda item: item['latency'])[:2]
+    best = None
+    for candidate in finalists:
+        measured_latency = float(perf_running(
+            M, N, K, candidate['BM'], candidate['BN'], candidate['Algo'],
+            candidate['cSeg'], candidate['hint'], comm_op,
+        ))
+        print(
+            f"Finalist candidate={candidate['index']} Algo={candidate['Algo']} "
+            f"pred={candidate['latency']:.4f} measured={measured_latency:.4f}"
+        )
+        if best is None or measured_latency < best['measured_latency']:
+            best = dict(candidate, measured_latency=measured_latency)
+
+    print(
+        f"Best candidate={best['index']} Algo={best['Algo']} "
+        f"measured_latency={best['measured_latency']:.4f} cSeg={best['cSeg']}"
+    )
+    save_solution(
+        M, N, K, best['BM'], best['BN'], best['gemm_dur'],
+        best['Algo'], best['hint'], best['cSeg'],
+    )
+    print('Solution saved.')
 
 
 # Define the main function
@@ -513,13 +668,20 @@ def main():
     parser.add_argument('--n', type=int, default=8192)
     parser.add_argument('--comm_op', type=str, default='all_reduce')
     parser.add_argument('--predictive_search', type=bool, default=False)
+    parser.add_argument(
+        '--search_policy',
+        choices=('fast', 'robust'),
+        default='fast',
+        help='fast selects the first usable candidate; robust evaluates all candidates and benchmarks the predicted top two',
+    )
     args = parser.parse_args()
 
     # Force to use predictive search if the workload is large
     if args.predictive_search or args.m * args.n > 33554432:
         comm_array = torch.load(f"../configs/bandwidth_{args.comm_op}_tp{world_size}.pt")
         print("Bandwidth curve captured.")
-        fast_search(args.m, args.n, args.k, comm_array, args.comm_op)
+        search_fn = fast_search if args.search_policy == 'fast' else robust_search
+        search_fn(args.m, args.n, args.k, comm_array, args.comm_op)
     else:
         # compute the optimal solution
         exhaustive_search(args.m, args.n, args.k, args.comm_op)

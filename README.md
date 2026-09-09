@@ -102,14 +102,15 @@ Then the operators are registered as torch.class, and in Python code, the `.so` 
 │   ├── pybind.cpp
 │   └── wait.cuh              // Signal kernel
 ├── test
+│   ├── benchmark_overlap_variants.py // Compare fast and robust search-policy tuning time and overlap runtime latency
 │   └── test.py
 ├── tool
 │   └── generate_instances.py // Generate templated GEMMs
 ├── tune
-│   ├── bandwidth.py          // Bandwidth test for predictive search
+│   ├── bandwidth.py          // Bandwidth test for predictive wave-group search
 │   ├── gen_config.py         // Generate GEMM configs based on CUTLASS profiler
 │   ├── profile_config.py     // Customized profiler
-│   └── search.py             // Exhausitive search and predictive search
+│   └── search.py             // Select wave grouping (exhaustive/predictive) and GEMM candidate (fast/robust)
 └── CMakeLists.txt
 ```
 
@@ -134,13 +135,13 @@ Currently the repo supports two ways to generate the proper configs for GEMMs fo
 ### Tune
 Tune the wave group size. Note multiple GPUs are needed in this program and the environment variable `CUDA_VISIBLE_DEVICES` must be set, as we use the `spawn` method (torch.multiprocessing.spawn) and the rank and world size are explicitly determined. 
 
-1. The repo provides both the exhaustive and predictive search methods, and the latter is recommended when `MxN>4096x4096`. If the predictive method is chosen, please generate the bandwidth curve first. Given GPU and communication primitive, the bandwidth curve needs only one generation. 
+1. The repo provides exhaustive and predictive methods for selecting the wave grouping (`cSeg`) of a fixed GEMM candidate. Exhaustive search benchmarks every wave-group partition, whereas predictive wave-group search uses the measured GEMM latency and communication bandwidth curve to estimate the latency of each partition. Predictive wave-group search is recommended when `MxN>4096x4096`. Generate the bandwidth curve first; for a given GPU and communication primitive, it needs to be generated only once.
 ```shell
     $ CUDA_VISIBLE_DEVICES=0,1 python bandwidth.py --comm_op all_reduce
 ```
-2. Two search methods share the same script, `--predictive_search` should be specified if used.
+2. `--predictive_search` and `--search_policy` control different decisions. `--predictive_search` enables the model-based wave-group selection described above. Within that path, the separate `--search_policy` option controls GEMM-candidate selection: `fast` stops after the first usable candidate, while `robust` ranks multiple candidates using calibrated estimates of their final overlap latency and then benchmarks the predicted top two.
 ```shell
-    $ CUDA_VISIBLE_DEVICES=0,1 python search.py --m $M --n $N --k $K --comm_op {all_reduce, reduce_scatter} --predictive_search True
+    $ CUDA_VISIBLE_DEVICES=0,1 python search.py --m $M --n $N --k $K --comm_op {all_reduce, reduce_scatter} --predictive_search True --search_policy {fast,robust}
 ```
 3. The generated solution is written into the corresponding `.json` file. 
 

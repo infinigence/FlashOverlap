@@ -71,6 +71,13 @@ instance/
 # Sphinx documentation
 docs/_build/
 
+# Local FlashOverlap experiment notes and raw benchmark results
+docs/calibrated_overlap_prediction.md
+docs/comprehensive_overlap_benchmark.md
+docs/comprehensive_overlap_results.json
+docs/conservative_multicandidate_search.md
+docs/conservative_overlap_technical_report.md
+
 # PyBuilder
 .pybuilder/
 target/
